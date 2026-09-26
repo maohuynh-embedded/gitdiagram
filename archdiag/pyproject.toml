@@ -15,9 +15,15 @@ dependencies = [
   "pathspec>=0.12",
   "fastapi>=0.115",
   "uvicorn>=0.32",
+  # 0.26.0 corrupts memory on CPython 3.14 (crashes seen on real code); keep 0.25 until fixed.
+  "tree-sitter>=0.25.2,<0.26",
+  "tree-sitter-c>=0.24",
+  "tree-sitter-cpp>=0.23",
 ]
 
 [project.optional-dependencies]
+clang = ["libclang>=18"]
+
 dev = ["pytest>=8", "ruff>=0.8", "mypy>=1.13"]
 
 [project.scripts]

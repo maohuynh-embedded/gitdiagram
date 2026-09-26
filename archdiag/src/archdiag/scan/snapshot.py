@@ -29,6 +29,7 @@ class RepoSnapshot:
     readme: str | None
     build_files: tuple[str, ...]
     content_hash: str
+    hashes: dict[str, str] = field(default_factory=dict, compare=False, repr=False)
     _file_paths: frozenset[str] = field(init=False, repr=False, compare=False)
 
     def __post_init__(self) -> None:
@@ -53,13 +54,15 @@ def _is_build_file(path: str) -> bool:
     return name in BUILD_FILE_NAMES or Path(name).suffix in BUILD_SUFFIXES
 
 
-def _hash_files(root: Path, files: Sequence[FileEntry]) -> str:
+def _hash_files(root: Path, files: Sequence[FileEntry]) -> tuple[str, dict[str, str]]:
     digest = hashlib.sha256()
+    per_file: dict[str, str] = {}
     for entry in files:
         with (root / entry.path).open("rb") as fh:
             file_digest = hashlib.file_digest(fh, "sha256").hexdigest()
+        per_file[entry.path] = file_digest
         digest.update(f"{entry.path}\0{file_digest}\n".encode())
-    return digest.hexdigest()
+    return digest.hexdigest(), per_file
 
 
 def build_snapshot(
@@ -70,7 +73,7 @@ def build_snapshot(
     root = root.resolve()
     try:
         files = walk(root, include, exclude)
-        content_hash = _hash_files(root, files)
+        content_hash, hashes = _hash_files(root, files)
     except OSError as exc:
         raise ScanError(f"Cannot read {root}: {exc}") from exc
     if not files:
@@ -84,4 +87,6 @@ def build_snapshot(
     paths = {entry.path for entry in files}
     readme = next((name for name in README_NAMES if name in paths), None)
     build_files = tuple(entry.path for entry in files if _is_build_file(entry.path))
-    return RepoSnapshot(root, tuple(files), tuple(dirs), readme, build_files, content_hash)
+    return RepoSnapshot(
+        root, tuple(files), tuple(dirs), readme, build_files, content_hash, hashes
+    )
