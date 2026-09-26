@@ -43,16 +43,18 @@ ELEMENT_TYPE = {
 # Allowed (source, relationship, target) for the element types this exporter emits, taken
 # from the ArchiMate 3.1/3.2 relationship tables. Association is always allowed, and a Grouping
 # may aggregate or compose any concept.
-VALID = frozenset({
-    ("ApplicationComponent", "Serving", "ApplicationComponent"),
-    ("ApplicationComponent", "Flow", "ApplicationComponent"),
-    ("ApplicationComponent", "Composition", "ApplicationInterface"),
-    ("ApplicationInterface", "Serving", "ApplicationComponent"),
-    ("Artifact", "Realization", "ApplicationComponent"),
-    ("SystemSoftware", "Serving", "ApplicationComponent"),
-    ("Device", "Serving", "ApplicationComponent"),
-    ("Device", "Assignment", "SystemSoftware"),
-})
+VALID = frozenset(
+    {
+        ("ApplicationComponent", "Serving", "ApplicationComponent"),
+        ("ApplicationComponent", "Flow", "ApplicationComponent"),
+        ("ApplicationComponent", "Composition", "ApplicationInterface"),
+        ("ApplicationInterface", "Serving", "ApplicationComponent"),
+        ("Artifact", "Realization", "ApplicationComponent"),
+        ("SystemSoftware", "Serving", "ApplicationComponent"),
+        ("Device", "Serving", "ApplicationComponent"),
+        ("Device", "Assignment", "SystemSoftware"),
+    }
+)
 
 
 def is_valid(source: str, relationship: str, target: str) -> bool:
@@ -93,8 +95,9 @@ class _Model:
     elements: dict[str, tuple[str, Element]] = field(default_factory=dict)  # xid → (type, el)
     relations: list[_Rel] = field(default_factory=list)
 
-    def add_relation(self, kind: str, source: str, target: str, name: str = "",
-                     directed: bool = False) -> None:
+    def add_relation(
+        self, kind: str, source: str, target: str, name: str = "", directed: bool = False
+    ) -> None:
         rel_id = _xid(f"r_{kind}_{source}_{target}")
         if any(r.id == rel_id for r in self.relations):
             return
@@ -152,8 +155,10 @@ def _map(ad: AD, result: ExportResult) -> _Model:
 
 
 def _properties(parent: ET.Element, element: Element, definitions: dict[str, str]) -> None:
-    values = {"path": ", ".join(element.paths[:5]),
-              **{k: v for k, v in element.properties.items() if v}}
+    values = {
+        "path": ", ".join(element.paths[:5]),
+        **{k: v for k, v in element.properties.items() if v},
+    }
     values = {k: v for k, v in values.items() if v}
     if not values:
         return
@@ -182,20 +187,33 @@ def _row(parent: ET.Element, layout: _Layout, xids: list[str], x: int, y: int) -
         col, row = index % PER_ROW, index // PER_ROW
         nx, ny = x + col * (NODE_W + GAP), y + row * (NODE_H + GAP)
         node_id = layout.node_id()
-        ET.SubElement(parent, _q("node"), {
-            "identifier": node_id, "elementRef": xid, f"{{{XSI}}}type": "Element",
-            "x": str(nx), "y": str(ny), "w": str(NODE_W), "h": str(NODE_H),
-        })
+        ET.SubElement(
+            parent,
+            _q("node"),
+            {
+                "identifier": node_id,
+                "elementRef": xid,
+                f"{{{XSI}}}type": "Element",
+                "x": str(nx),
+                "y": str(ny),
+                "w": str(NODE_W),
+                "h": str(NODE_H),
+            },
+        )
         layout.placed[xid] = node_id
         width = max(width, nx - x + NODE_W)
         height = max(height, ny - y + NODE_H)
     return width, height
 
 
-def _diagram(views: ET.Element, view_id: str, name: str, rows: list[tuple[str | None, list[str]]],
-             model: _Model) -> ET.Element:
-    view = ET.SubElement(views, _q("view"), {"identifier": view_id,
-                                             f"{{{XSI}}}type": "Diagram"})
+def _diagram(
+    views: ET.Element,
+    view_id: str,
+    name: str,
+    rows: list[tuple[str | None, list[str]]],
+    model: _Model,
+) -> ET.Element:
+    view = ET.SubElement(views, _q("view"), {"identifier": view_id, f"{{{XSI}}}type": "Diagram"})
     _lang(view, "name", name)
     layout = _Layout(view_id)
     y = PAD
@@ -204,10 +222,19 @@ def _diagram(views: ET.Element, view_id: str, name: str, rows: list[tuple[str | 
             continue
         if group_xid:
             group_id = layout.node_id()
-            group = ET.SubElement(view, _q("node"), {
-                "identifier": group_id, "elementRef": group_xid, f"{{{XSI}}}type": "Element",
-                "x": str(PAD), "y": str(y), "w": "1", "h": "1",
-            })
+            group = ET.SubElement(
+                view,
+                _q("node"),
+                {
+                    "identifier": group_id,
+                    "elementRef": group_xid,
+                    f"{{{XSI}}}type": "Element",
+                    "x": str(PAD),
+                    "y": str(y),
+                    "w": "1",
+                    "h": "1",
+                },
+            )
             layout.placed[group_xid] = group_id
             width, height = _row(group, layout, members, PAD * 2, y + PAD * 2)
             group.set("w", str(width + PAD * 2))
@@ -218,17 +245,25 @@ def _diagram(views: ET.Element, view_id: str, name: str, rows: list[tuple[str | 
             y += height + GAP
     counter = 0
     for relation in model.relations:
-        if relation.type == "Aggregation" and relation.source in layout.placed and \
-                model.elements.get(relation.source, ("",))[0] == "Grouping":
+        if (
+            relation.type == "Aggregation"
+            and relation.source in layout.placed
+            and model.elements.get(relation.source, ("",))[0] == "Grouping"
+        ):
             continue  # nesting already shows the aggregation
         if relation.source in layout.placed and relation.target in layout.placed:
             counter += 1
-            ET.SubElement(view, _q("connection"), {
-                "identifier": f"{view_id}-c-{counter}", "relationshipRef": relation.id,
-                f"{{{XSI}}}type": "Relationship",
-                "source": layout.placed[relation.source],
-                "target": layout.placed[relation.target],
-            })
+            ET.SubElement(
+                view,
+                _q("connection"),
+                {
+                    "identifier": f"{view_id}-c-{counter}",
+                    "relationshipRef": relation.id,
+                    f"{{{XSI}}}type": "Relationship",
+                    "source": layout.placed[relation.source],
+                    "target": layout.placed[relation.target],
+                },
+            )
     return view
 
 
@@ -239,24 +274,32 @@ def export_archimate(ad: AD) -> ExportResult:
         source_type = model.elements[relation.source][0]
         target_type = model.elements[relation.target][0]
         if not is_valid(source_type, relation.type, target_type):
-            result.error(f"{relation.type} from {source_type} to {target_type} is not allowed by "
-                         "the ArchiMate relationship table.", relation.id)
+            result.error(
+                f"{relation.type} from {source_type} to {target_type} is not allowed by "
+                "the ArchiMate relationship table.",
+                relation.id,
+            )
 
     ET.register_namespace("", NS)
     ET.register_namespace("xsi", XSI)
-    root = ET.Element(_q("model"), {
-        "identifier": _xid(f"model_{ad.system_name}"),
-        f"{{{XSI}}}schemaLocation": f"{NS} {SCHEMA_BASE}archimate3_Diagram.xsd",
-    })
+    root = ET.Element(
+        _q("model"),
+        {
+            "identifier": _xid(f"model_{ad.system_name}"),
+            f"{{{XSI}}}schemaLocation": f"{NS} {SCHEMA_BASE}archimate3_Diagram.xsd",
+        },
+    )
     _lang(root, "name", ad.system_name)
-    _lang(root, "documentation",
-          (ad.overview or "Generated by archdiag from static analysis.")[:4000])
+    _lang(
+        root, "documentation", (ad.overview or "Generated by archdiag from static analysis.")[:4000]
+    )
     definitions: dict[str, str] = {}
 
     elements = ET.SubElement(root, _q("elements"))
     for xid, (archimate_type, element) in sorted(model.elements.items()):
-        node = ET.SubElement(elements, _q("element"), {"identifier": xid,
-                                                       f"{{{XSI}}}type": archimate_type})
+        node = ET.SubElement(
+            elements, _q("element"), {"identifier": xid, f"{{{XSI}}}type": archimate_type}
+        )
         _lang(node, "name", element.name)
         if element.description:
             _lang(node, "documentation", element.description[:2000])
@@ -264,8 +307,12 @@ def export_archimate(ad: AD) -> ExportResult:
 
     relationships = ET.SubElement(root, _q("relationships"))
     for relation in model.relations:
-        attributes = {"identifier": relation.id, "source": relation.source,
-                      "target": relation.target, f"{{{XSI}}}type": relation.type}
+        attributes = {
+            "identifier": relation.id,
+            "source": relation.source,
+            "target": relation.target,
+            f"{{{XSI}}}type": relation.type,
+        }
         if relation.type == "Association" and relation.directed:
             attributes["isDirected"] = "true"
         node = ET.SubElement(relationships, _q("relationship"), attributes)
@@ -285,17 +332,23 @@ def export_archimate(ad: AD) -> ExportResult:
     if definitions:
         defs = ET.SubElement(root, _q("propertyDefinitions"))
         for key, identifier in definitions.items():
-            definition = ET.SubElement(defs, _q("propertyDefinition"),
-                                       {"identifier": identifier, "type": "string"})
+            definition = ET.SubElement(
+                defs, _q("propertyDefinition"), {"identifier": identifier, "type": "string"}
+            )
             _lang(definition, "name", f"archdiag:{key}")
 
     views = ET.SubElement(ET.SubElement(root, _q("views")), _q("diagrams"))
     components = [e for e in ad.of_type("component") if _xid(e.id) in model.elements]
     rows: list[tuple[str | None, list[str]]] = []
     for layer in ad.of_type("layer"):
-        members = [_xid(c.id) for c in components if any(
-            r.type == "contains" and r.source == layer.id and r.target == c.id
-            for r in ad.relations)]
+        members = [
+            _xid(c.id)
+            for c in components
+            if any(
+                r.type == "contains" and r.source == layer.id and r.target == c.id
+                for r in ad.relations
+            )
+        ]
         rows.append((_xid(layer.id), members))
     grouped = {x for _, members in rows for x in members}
     rows.append((None, [_xid(c.id) for c in components if _xid(c.id) not in grouped]))
@@ -315,19 +368,28 @@ def export_archimate(ad: AD) -> ExportResult:
     ET.indent(root, space="  ")
     xml = ET.tostring(root, encoding="unicode", xml_declaration=False)
     result.files["archimate/model.xml"] = '<?xml version="1.0" encoding="UTF-8"?>\n' + xml + "\n"
-    result.views.append(ADView("archimate-application", "archimate-application",
-                               "ArchiMate: application cooperation",
-                               "Application components grouped by layer, their serving and flow "
-                               "relationships and the interfaces they offer.",
-                               element_ids=[e.id for e in components],
-                               files=["archimate/model.xml"]))
-    result.views.append(ADView("archimate-technology", "archimate-technology",
-                               "ArchiMate: technology",
-                               "Artifacts (build targets) realising the application components, "
-                               "the system software they use and the devices they reach.",
-                               element_ids=[e.id for e in ad.of_type("container", "external",
-                                                                    "device", "bus")],
-                               files=["archimate/model.xml"]))
+    result.views.append(
+        ADView(
+            "archimate-application",
+            "archimate-application",
+            "ArchiMate: application cooperation",
+            "Application components grouped by layer, their serving and flow "
+            "relationships and the interfaces they offer.",
+            element_ids=[e.id for e in components],
+            files=["archimate/model.xml"],
+        )
+    )
+    result.views.append(
+        ADView(
+            "archimate-technology",
+            "archimate-technology",
+            "ArchiMate: technology",
+            "Artifacts (build targets) realising the application components, "
+            "the system software they use and the devices they reach.",
+            element_ids=[e.id for e in ad.of_type("container", "external", "device", "bus")],
+            files=["archimate/model.xml"],
+        )
+    )
     validate_xsd(result)
     return result
 
@@ -371,8 +433,9 @@ def fetch_schemas(force: bool = False, target: Path = SCHEMA_DIR) -> list[str]:
             continue
         with urllib.request.urlopen(url, timeout=30) as response:  # noqa: S310 (fixed https/http URLs)
             data = response.read().decode("utf-8")
-        data = data.replace('schemaLocation="http://www.w3.org/2001/xml.xsd"',
-                            'schemaLocation="xml.xsd"')
+        data = data.replace(
+            'schemaLocation="http://www.w3.org/2001/xml.xsd"', 'schemaLocation="xml.xsd"'
+        )
         path.write_text(data, encoding="utf-8")
         lines.append(f"{name}: downloaded from {url}")
     lines.append(f"schemas stored in {target}")

@@ -32,8 +32,10 @@ def parse(xml: str) -> ET.Element:
 
 
 def types(root: ET.Element) -> dict[str, str]:
-    return {e.get("identifier") or "": e.get(f"{{{XSI}}}type") or ""
-            for e in root.iter(f"{{{NS}}}element")}
+    return {
+        e.get("identifier") or "": e.get(f"{{{XSI}}}type") or ""
+        for e in root.iter(f"{{{NS}}}element")
+    }
 
 
 def test_elements_relationships_and_views(mini_repo: Path) -> None:
@@ -45,15 +47,19 @@ def test_elements_relationships_and_views(mini_repo: Path) -> None:
     assert kinds["id-tgt_mini_ecu"] == "Artifact"
     assert kinds["id-ext_c_c_standard_library"] == "SystemSoftware"
     assert kinds["id-actor_device"] == "Device"
-    relations = {(r.get(f"{{{XSI}}}type"), r.get("source"), r.get("target"))
-                 for r in root.iter(f"{{{NS}}}relationship")}
+    relations = {
+        (r.get(f"{{{XSI}}}type"), r.get("source"), r.get("target"))
+        for r in root.iter(f"{{{NS}}}relationship")
+    }
     # src/app depends on src/drivers → drivers serves app
     assert ("Serving", "id-src_drivers", "id-src_app") in relations
     assert ("Aggregation", "id-layer_src", "id-src_app") in relations
     assert ("Realization", "id-tgt_mini_ecu", "id-src_app") in relations
     assert ("Serving", "id-ext_c_c_standard_library", "id-src_drivers") in relations
-    assert any(t == "Association" and s == "id-src_drivers" and d == "id-actor_device"
-               for t, s, d in relations)
+    assert any(
+        t == "Association" and s == "id-src_drivers" and d == "id-actor_device"
+        for t, s, d in relations
+    )
     views = [v.find(f"{{{NS}}}name").text for v in root.iter(f"{{{NS}}}view")]  # type: ignore[union-attr]
     assert views == ["Application cooperation", "Technology"]
     assert {"src_app", "src_drivers", "src_hal"} <= result.covered
@@ -65,9 +71,12 @@ def test_identifiers_are_unique_ncnames(mini_repo: Path) -> None:
     identifiers = [e.get("identifier") for e in root.iter() if e.get("identifier")]
     assert len(identifiers) == len(set(identifiers))
     assert all(NCNAME.match(i or "") for i in identifiers)
-    references = {e.get(a) for e in root.iter() for a in ("elementRef", "relationshipRef",
-                                                          "source", "target", "identifierRef")
-                  if e.get(a)}
+    references = {
+        e.get(a)
+        for e in root.iter()
+        for a in ("elementRef", "relationshipRef", "source", "target", "identifierRef")
+        if e.get(a)
+    }
     assert references <= set(identifiers)
 
 
@@ -76,8 +85,10 @@ def test_nested_group_nodes_have_room_for_children(mini_repo: Path) -> None:
     for group in root.iter(f"{{{NS}}}node"):
         children = group.findall(f"{{{NS}}}node")
         for child in children:
-            assert int(child.get("x", 0)) + int(child.get("w", 0)) <= \
-                int(group.get("x", 0)) + int(group.get("w", 0)) + 20
+            assert (
+                int(child.get("x", 0)) + int(child.get("w", 0))
+                <= int(group.get("x", 0)) + int(group.get("w", 0)) + 20
+            )
             assert int(child.get("y", 0)) >= int(group.get("y", 0))
 
 
@@ -100,8 +111,9 @@ def test_invalid_relationship_is_reported(mini_repo: Path) -> None:
     ad = ad_for(mini_repo)
     # "the library depends on src/app" maps to Serving from an application component to
     # system software, which the ArchiMate relationship table does not allow.
-    ad.relations.append(Relation("bogus", "depends", "ext_c_c_standard_library", "src_app",
-                                 "made up"))
+    ad.relations.append(
+        Relation("bogus", "depends", "ext_c_c_standard_library", "src_app", "made up")
+    )
     result = export_archimate(ad)
     errors = [i for i in result.issues if "not allowed" in i.message]
     assert len(errors) == 1
@@ -116,8 +128,10 @@ def test_missing_schemas_are_a_note(mini_repo: Path, tmp_path: Path) -> None:
     assert "fetch-schemas" in result.issues[0].message
 
 
-@pytest.mark.skipif(not (SCHEMA_DIR / "archimate3_Diagram.xsd").is_file(),
-                    reason="run `archdiag fetch-schemas` to enable XSD tests")
+@pytest.mark.skipif(
+    not (SCHEMA_DIR / "archimate3_Diagram.xsd").is_file(),
+    reason="run `archdiag fetch-schemas` to enable XSD tests",
+)
 def test_output_is_valid_against_the_open_group_xsd(mini_repo: Path) -> None:
     pytest.importorskip("lxml")
     result = export_archimate(ad_for(mini_repo))
@@ -125,13 +139,16 @@ def test_output_is_valid_against_the_open_group_xsd(mini_repo: Path) -> None:
     assert any("valid against" in i.message for i in result.issues)
 
 
-@pytest.mark.skipif(not (SCHEMA_DIR / "archimate3_Diagram.xsd").is_file(),
-                    reason="run `archdiag fetch-schemas` to enable XSD tests")
+@pytest.mark.skipif(
+    not (SCHEMA_DIR / "archimate3_Diagram.xsd").is_file(),
+    reason="run `archdiag fetch-schemas` to enable XSD tests",
+)
 def test_xsd_catches_broken_documents(mini_repo: Path) -> None:
     pytest.importorskip("lxml")
     result = export_archimate(ad_for(mini_repo))
     result.issues.clear()
     result.files["archimate/model.xml"] = result.files["archimate/model.xml"].replace(
-        'xsi:type="ApplicationComponent"', 'xsi:type="NotAnArchiMateType"', 1)
+        'xsi:type="ApplicationComponent"', 'xsi:type="NotAnArchiMateType"', 1
+    )
     validate_xsd(result)
     assert any(i.severity == "error" and i.message.startswith("XSD") for i in result.issues)

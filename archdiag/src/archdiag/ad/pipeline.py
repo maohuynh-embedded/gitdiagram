@@ -11,11 +11,12 @@ from pathlib import Path
 from typing import Any
 
 from archdiag.ad.build import build_ad
-from archdiag.ad.config import load_ad_config
+from archdiag.ad.config import ADConfig, load_ad_config
 from archdiag.ad.correspondence import check_correspondences
 from archdiag.ad.document import render_document
 from archdiag.ad.export.archimate import export_archimate
 from archdiag.ad.export.c4 import export_c4
+from archdiag.ad.export.sysml import export_sysml
 from archdiag.ad.model import AD
 from archdiag.ad.validate import ExportResult
 from archdiag.config import ConfigError, Settings, load_sections
@@ -27,18 +28,22 @@ from archdiag.scan.snapshot import RepoSnapshot, build_snapshot
 Progress = Callable[[str, str], None]
 AD_DIR = "ad"
 DOCUMENT = "architecture-description.md"
-Exporter = Callable[[AD, RepoSnapshot], ExportResult]
+Exporter = Callable[[AD, RepoSnapshot, ADConfig], ExportResult]
 
 
-def _c4(ad: AD, snapshot: RepoSnapshot) -> ExportResult:
+def _c4(ad: AD, snapshot: RepoSnapshot, config: ADConfig) -> ExportResult:
     return export_c4(ad)
 
 
-def _archimate(ad: AD, snapshot: RepoSnapshot) -> ExportResult:
+def _archimate(ad: AD, snapshot: RepoSnapshot, config: ADConfig) -> ExportResult:
     return export_archimate(ad)
 
 
-EXPORTERS: dict[str, Exporter] = {"c4": _c4, "archimate": _archimate}
+def _sysml(ad: AD, snapshot: RepoSnapshot, config: ADConfig) -> ExportResult:
+    return export_sysml(ad, config.sysml_validator)
+
+
+EXPORTERS: dict[str, Exporter] = {"c4": _c4, "archimate": _archimate, "sysml": _sysml}
 ALL_NOTATIONS = ("c4", "archimate", "sysml", "autosar", "safety")
 
 
@@ -112,7 +117,7 @@ def generate_ad(
             continue
         if progress:
             progress("ad", f"exporting {name}")
-        result = exporter(ad, snapshot)
+        result = exporter(ad, snapshot, config)
         results[name] = result
         ad.views.extend(result.views)
     ad.correspondences = check_correspondences(ad, results)
