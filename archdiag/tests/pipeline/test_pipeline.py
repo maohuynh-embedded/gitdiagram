@@ -64,7 +64,10 @@ def test_gives_up_after_max_attempts(mini_repo: Path) -> None:
         analyze(mini_repo, out, SETTINGS, client)
 
     assert sorted(p.name for p in (out / "debug").iterdir()) == [
-        "attempt-1.txt", "attempt-2.txt", "attempt-3.txt", "errors.json",
+        "attempt-1.txt",
+        "attempt-2.txt",
+        "attempt-3.txt",
+        "errors.json",
     ]
     assert not (out / "model.json").exists()
 

@@ -53,8 +53,14 @@ class Fact:
     data: dict[str, Any] = field(default_factory=dict, hash=False, compare=True)
 
     def to_row(self) -> tuple[str, str, int, str, int, str]:
-        return (self.file, self.kind, self.line, self.source, int(self.confidence),
-                json.dumps(self.data, sort_keys=True))
+        return (
+            self.file,
+            self.kind,
+            self.line,
+            self.source,
+            int(self.confidence),
+            json.dumps(self.data, sort_keys=True),
+        )
 
     @classmethod
     def from_row(cls, row: tuple[str, str, int, str, int, str]) -> Fact:

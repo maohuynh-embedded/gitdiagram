@@ -10,8 +10,14 @@ from archdiag.model.schema_v2 import ArchModelV2, upgrade_v1
 from tests.fakes import GOOD_MODEL
 
 EXPECTED = Path(__file__).parents[2] / "benchmarks" / "mini-repo.expected.toml"
-FILES = ["src/app/main.c", "src/drivers/can/can_driver.c", "src/drivers/can/can_driver.h",
-         "src/hal/gpio.c", "src/hal/gpio.h", "build/main.o"]
+FILES = [
+    "src/app/main.c",
+    "src/drivers/can/can_driver.c",
+    "src/drivers/can/can_driver.h",
+    "src/hal/gpio.c",
+    "src/hal/gpio.h",
+    "build/main.o",
+]
 KNOWN = frozenset({"src", "src/app", "src/drivers", "src/drivers/can", "src/hal", "build", *FILES})
 
 
@@ -65,19 +71,25 @@ def test_invalid_expected_file(tmp_path: Path) -> None:
 
 
 def test_coarser_and_finer_splits_are_credited() -> None:
-    coarse = model(nodes=[
-        {"id": "firmware", "label": "Firmware", "kind": "x", "paths": ["src"]},
-    ], edges=[])
+    coarse = model(
+        nodes=[
+            {"id": "firmware", "label": "Firmware", "kind": "x", "paths": ["src"]},
+        ],
+        edges=[],
+    )
     report = score(coarse, load_expected(EXPECTED), KNOWN, FILES)
     assert report.component_recall == 1.0  # one node holds every component
     assert report.relation_recall == 0.0  # but it cannot show relations between them
 
-    fine = model(nodes=[
-        {"id": "app", "label": "A", "kind": "x", "paths": ["src/app"]},
-        {"id": "can_c", "label": "C", "kind": "x", "paths": ["src/drivers/can/can_driver.c"]},
-        {"id": "can_h", "label": "H", "kind": "x", "paths": ["src/drivers/can/can_driver.h"]},
-        {"id": "hal", "label": "G", "kind": "x", "paths": ["src/hal"]},
-    ], edges=[{"from": "app", "to": "can_h"}, {"from": "app", "to": "hal"}])
+    fine = model(
+        nodes=[
+            {"id": "app", "label": "A", "kind": "x", "paths": ["src/app"]},
+            {"id": "can_c", "label": "C", "kind": "x", "paths": ["src/drivers/can/can_driver.c"]},
+            {"id": "can_h", "label": "H", "kind": "x", "paths": ["src/drivers/can/can_driver.h"]},
+            {"id": "hal", "label": "G", "kind": "x", "paths": ["src/hal"]},
+        ],
+        edges=[{"from": "app", "to": "can_h"}, {"from": "app", "to": "hal"}],
+    )
     report = score(fine, load_expected(EXPECTED), KNOWN, FILES)
     assert report.component_recall == 1.0
     assert report.relation_recall == 1.0

@@ -114,9 +114,7 @@ def test_llm_mode_needs_a_model(mini_repo: Path) -> None:
     assert cli.main(["analyze", str(mini_repo), "--mode", "llm", "--no-llm"]) == 2
 
 
-def test_check_exits_3_on_violations(
-    mini_repo: Path, capsys: pytest.CaptureFixture[str]
-) -> None:
+def test_check_exits_3_on_violations(mini_repo: Path, capsys: pytest.CaptureFixture[str]) -> None:
     assert cli.main(["check", str(mini_repo)]) == 0
     (mini_repo / "archdiag.toml").write_text(
         '[architecture]\nlayers = ["hal", "app"]\n'

@@ -9,10 +9,21 @@ from pathlib import Path
 
 from archdiag.scan.walker import FileEntry, walk
 
-BUILD_FILE_NAMES = frozenset({
-    "CMakeLists.txt", "CMakePresets.json", "Makefile", "makefile", "GNUmakefile", "meson.build",
-    "SConstruct", "Kconfig", "conanfile.txt", "conanfile.py", "vcpkg.json",
-})
+BUILD_FILE_NAMES = frozenset(
+    {
+        "CMakeLists.txt",
+        "CMakePresets.json",
+        "Makefile",
+        "makefile",
+        "GNUmakefile",
+        "meson.build",
+        "SConstruct",
+        "Kconfig",
+        "conanfile.txt",
+        "conanfile.py",
+        "vcpkg.json",
+    }
+)
 BUILD_SUFFIXES = frozenset({".pro", ".pri", ".qbs", ".cmake"})
 README_NAMES = ("README.md", "README.rst", "README.txt", "README", "Readme.md", "readme.md")
 
@@ -78,15 +89,15 @@ def build_snapshot(
         raise ScanError(f"Cannot read {root}: {exc}") from exc
     if not files:
         raise ScanError(f"No analysable files found in {root} (everything is empty or excluded)")
-    dirs = sorted({
-        "/".join(parts[:depth])
-        for entry in files
-        for parts in [entry.path.split("/")]
-        for depth in range(1, len(parts))
-    })
+    dirs = sorted(
+        {
+            "/".join(parts[:depth])
+            for entry in files
+            for parts in [entry.path.split("/")]
+            for depth in range(1, len(parts))
+        }
+    )
     paths = {entry.path for entry in files}
     readme = next((name for name in README_NAMES if name in paths), None)
     build_files = tuple(entry.path for entry in files if _is_build_file(entry.path))
-    return RepoSnapshot(
-        root, tuple(files), tuple(dirs), readme, build_files, content_hash, hashes
-    )
+    return RepoSnapshot(root, tuple(files), tuple(dirs), readme, build_files, content_hash, hashes)

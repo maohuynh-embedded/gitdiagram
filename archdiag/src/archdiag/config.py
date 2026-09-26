@@ -13,10 +13,21 @@ API_KINDS = ("ollama", "openai")
 USER_CONFIG = Path.home() / ".config" / "archdiag" / "config.toml"
 REPO_CONFIG_NAME = "archdiag.toml"
 # Tables owned by other loaders (architecture, protocols, standard views); Settings skips them.
-SECTION_KEYS = frozenset({
-    "architecture", "protocol", "c4", "archimate", "sysml", "autosar", "safety",
-    "requirements", "stakeholders", "concerns", "decisions",
-})
+SECTION_KEYS = frozenset(
+    {
+        "architecture",
+        "protocol",
+        "c4",
+        "archimate",
+        "sysml",
+        "autosar",
+        "safety",
+        "requirements",
+        "stakeholders",
+        "concerns",
+        "decisions",
+    }
+)
 
 
 class ConfigError(Exception):

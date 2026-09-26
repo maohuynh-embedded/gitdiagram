@@ -38,7 +38,11 @@ _QT_SLOTS = re.compile(rb"\b(public|protected|private)([ \t]+(?:slots|Q_SLOTS))(
 _QT_SIGNALS = re.compile(rb"\b(?:signals|Q_SIGNALS)[ \t]*:")
 _EXPORT_MACRO = re.compile(rb"\b(class|struct)([ \t]+)([A-Z][A-Z0-9_]*_(?:EXPORT|API|DLL)\w*)")
 _INT_SUFFIX = re.compile(r"[uUlL]+$")
-_CLASS_TYPES = {"class_specifier": "class", "struct_specifier": "struct", "union_specifier": "union"}
+_CLASS_TYPES = {
+    "class_specifier": "class",
+    "struct_specifier": "struct",
+    "union_specifier": "union",
+}
 _CONDITIONAL = {"preproc_if", "preproc_ifdef", "preproc_elif", "preproc_else", "preproc_elifdef"}
 _TYPE_NAME_NODES = {"type_identifier"}
 _MAX_ARG_CHARS = 60
@@ -82,10 +86,16 @@ class _Extractor:
     def text(self, node: Node | None) -> str:
         if node is None:
             return ""
-        return self.src[node.start_byte:node.end_byte].decode("utf-8", errors="replace")
+        return self.src[node.start_byte : node.end_byte].decode("utf-8", errors="replace")
 
-    def add(self, kind: str, node: Node, data: dict[str, Any],
-            confidence: Confidence = Confidence.MEDIUM, source: str = TREESITTER) -> None:
+    def add(
+        self,
+        kind: str,
+        node: Node,
+        data: dict[str, Any],
+        confidence: Confidence = Confidence.MEDIUM,
+        source: str = TREESITTER,
+    ) -> None:
         self.facts.append(Fact(kind, self.path, node.start_point.row + 1, source, confidence, data))
 
     # --- traversal -------------------------------------------------------------------------
@@ -147,20 +157,22 @@ class _Extractor:
             return
         raw = self.text(path_node).strip()
         system = path_node.type == "system_lib_string"
-        spelled = raw[1:-1] if len(raw) >= 2 and raw[0] in "<\"" else raw
+        spelled = raw[1:-1] if len(raw) >= 2 and raw[0] in '<"' else raw
         if not spelled:
             return
         confidence = Confidence.MEDIUM.lowered() if cond else Confidence.MEDIUM
-        self.add(INCLUDE, node, {"spelled": spelled, "system": system, "conditional": cond},
-                 confidence)
+        self.add(
+            INCLUDE, node, {"spelled": spelled, "system": system, "conditional": cond}, confidence
+        )
 
     def qualify(self, ns: tuple[str, ...], owner: str | None, name: str) -> str:
         if owner:
             return f"{owner}::{name}"
         return "::".join((*ns, name))
 
-    def class_definition(self, node: Node, ns: tuple[str, ...], owner: str | None, cond: bool,
-                         alias: str | None) -> None:
+    def class_definition(
+        self, node: Node, ns: tuple[str, ...], owner: str | None, cond: bool, alias: str | None
+    ) -> None:
         name_node = node.child_by_field_name("name")
         name = self.text(name_node) or alias
         if not name:
@@ -180,8 +192,13 @@ class _Extractor:
                     pure_virtual |= self.field(member, qualified)
                 elif member.type in _CLASS_TYPES and member.child_by_field_name("body"):
                     self.class_definition(member, ns, qualified, cond, None)
-                elif member.type in ("function_definition", "declaration", "template_declaration",
-                                     "enum_specifier", "type_definition"):
+                elif member.type in (
+                    "function_definition",
+                    "declaration",
+                    "template_declaration",
+                    "enum_specifier",
+                    "type_definition",
+                ):
                     self.visit(member, ns, qualified, cond)
         if pure_virtual:
             self.add(INTERFACE, node, {"class": qualified})
@@ -243,8 +260,11 @@ class _Extractor:
     def typedef(self, node: Node, ns: tuple[str, ...], owner: str | None, cond: bool) -> None:
         type_node = node.child_by_field_name("type")
         alias = self.text(node.child_by_field_name("declarator")).strip("* ")
-        if (type_node is not None and type_node.type in _CLASS_TYPES
-                and type_node.child_by_field_name("body") is not None):
+        if (
+            type_node is not None
+            and type_node.type in _CLASS_TYPES
+            and type_node.child_by_field_name("body") is not None
+        ):
             self.class_definition(type_node, ns, owner, cond, alias or None)
 
     def enum(self, node: Node, ns: tuple[str, ...], owner: str | None) -> None:
@@ -258,21 +278,28 @@ class _Extractor:
             if enumerator.type != "enumerator":
                 continue
             value = enumerator.child_by_field_name("value")
-            self.message(enumerator, self.text(enumerator.child_by_field_name("name")),
-                         self.text(value) if value is not None else "")
+            self.message(
+                enumerator,
+                self.text(enumerator.child_by_field_name("name")),
+                self.text(value) if value is not None else "",
+            )
 
     def define(self, node: Node) -> None:
         value = node.child_by_field_name("value")
-        self.message(node, self.text(node.child_by_field_name("name")),
-                     self.text(value) if value is not None else "")
+        self.message(
+            node,
+            self.text(node.child_by_field_name("name")),
+            self.text(value) if value is not None else "",
+        )
 
     def constant(self, node: Node) -> None:
         for child in node.named_children:
             if child.type == "init_declarator":
                 value = child.child_by_field_name("value")
                 if value is not None and value.type == "number_literal":
-                    self.message(child, self.text(child.child_by_field_name("declarator")),
-                                 self.text(value))
+                    self.message(
+                        child, self.text(child.child_by_field_name("declarator")), self.text(value)
+                    )
 
     def message(self, node: Node, name: str, value: str) -> None:
         number = _parse_int(value) if value else None
@@ -280,15 +307,24 @@ class _Extractor:
             return
         for pattern in self.protocols.patterns:
             if pattern.is_message_name(name):
-                self.add(MESSAGE, node, {"protocol": pattern.name, "name": name, "id": number},
-                         Confidence.MEDIUM, PATTERN)
+                self.add(
+                    MESSAGE,
+                    node,
+                    {"protocol": pattern.name, "name": name, "id": number},
+                    Confidence.MEDIUM,
+                    PATTERN,
+                )
                 return
 
     def declarator_name(self, node: Node) -> str:
         declarator = node.child_by_field_name("declarator")
         while declarator is not None and declarator.type != "function_declarator":
-            if declarator.type not in ("pointer_declarator", "reference_declarator",
-                                       "parenthesized_declarator", "attributed_declarator"):
+            if declarator.type not in (
+                "pointer_declarator",
+                "reference_declarator",
+                "parenthesized_declarator",
+                "attributed_declarator",
+            ):
                 return ""
             declarator = declarator.child_by_field_name("declarator")
         if declarator is None:
@@ -324,11 +360,23 @@ class _Extractor:
 
     def io(self, node: Node, name: str, role: str, args: list[str]) -> None:
         for pattern in self.protocols.patterns:
-            direction = "send" if pattern.is_send(name) else "recv" if pattern.is_recv(name) else None
+            direction = (
+                "send" if pattern.is_send(name) else "recv" if pattern.is_recv(name) else None
+            )
             if direction:
-                self.add(MESSAGE_IO, node, {"protocol": pattern.name, "direction": direction,
-                                            "function": name, "role": role, "args": args},
-                         Confidence.LOW, PATTERN)
+                self.add(
+                    MESSAGE_IO,
+                    node,
+                    {
+                        "protocol": pattern.name,
+                        "direction": direction,
+                        "function": name,
+                        "role": role,
+                        "args": args,
+                    },
+                    Confidence.LOW,
+                    PATTERN,
+                )
                 return
 
 

@@ -25,8 +25,12 @@ def test_mini_repo_with_local_model(mini_repo: Path) -> None:
 
     result = analyze(mini_repo, mini_repo / ".archdiag", settings, client)
     snapshot = build_snapshot(mini_repo)
-    report = score(result.model, load_expected(EXPECTED), snapshot.known_paths(),
-                   [f.path for f in snapshot.files])
+    report = score(
+        result.model,
+        load_expected(EXPECTED),
+        snapshot.known_paths(),
+        [f.path for f in snapshot.files],
+    )
 
     assert report.junk_nodes == []
     assert report.path_validity == 1.0

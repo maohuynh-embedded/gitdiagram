@@ -18,48 +18,111 @@ from archdiag.facts.model import (
 
 COMPONENTS = [
     Component("app", "app", ("app",), ("app/main.cpp", "app/app.h"), "app", "module", "inferred"),
-    Component("ports", "ports", ("ports",), ("ports/can_port.h",), "ports", "module",
-              "inferred"),
-    Component("can", "infra/can", ("infra/can",), ("infra/can/driver.h", "infra/can/driver.cpp"),
-              "infra", "module", "inferred"),
+    Component("ports", "ports", ("ports",), ("ports/can_port.h",), "ports", "module", "inferred"),
+    Component(
+        "can",
+        "infra/can",
+        ("infra/can",),
+        ("infra/can/driver.h", "infra/can/driver.cpp"),
+        "infra",
+        "module",
+        "inferred",
+    ),
     Component("tests", "tests", ("tests",), ("tests/t.cpp",), "tests", "test", "inferred"),
 ]
 
 
-def f(kind: str, file: str, line: int, data: dict[str, Any],
-      confidence: Confidence = Confidence.MEDIUM, source: str = TREESITTER) -> Fact:
+def f(
+    kind: str,
+    file: str,
+    line: int,
+    data: dict[str, Any],
+    confidence: Confidence = Confidence.MEDIUM,
+    source: str = TREESITTER,
+) -> Fact:
     return Fact(kind, file, line, source, confidence, data)
 
 
 FACTS = [
     f(INCLUDE, "app/main.cpp", 1, {"spelled": "can_port.h", "target": "ports/can_port.h"}),
-    f(INCLUDE, "app/main.cpp", 2, {"spelled": "driver.h", "target": "infra/can/driver.h"},
-      Confidence.LOW),
+    f(
+        INCLUDE,
+        "app/main.cpp",
+        2,
+        {"spelled": "driver.h", "target": "infra/can/driver.h"},
+        Confidence.LOW,
+    ),
     f(INCLUDE, "app/main.cpp", 3, {"spelled": "app.h", "target": "app/app.h"}),
-    f(INCLUDE, "app/main.cpp", 4, {"spelled": "QObject", "system": True, "target": None,
-                                   "external": "Qt"}),
+    f(
+        INCLUDE,
+        "app/main.cpp",
+        4,
+        {"spelled": "QObject", "system": True, "target": None, "external": "Qt"},
+    ),
     f(INCLUDE, "infra/can/driver.h", 1, {"spelled": "can_port.h", "target": "ports/can_port.h"}),
     f(INCLUDE, "tests/t.cpp", 1, {"spelled": "driver.h", "target": "infra/can/driver.h"}),
     f(INCLUDE, "tests/t.cpp", 2, {"spelled": "gtest.h", "target": None, "external": "gtest"}),
     f(SYMBOL, "ports/can_port.h", 3, {"kind": "class", "name": "CanPort"}),
     f(INTERFACE, "ports/can_port.h", 3, {"class": "CanPort"}),
     f(SYMBOL, "infra/can/driver.h", 5, {"kind": "class", "name": "infra::Driver"}),
-    f(INHERITS, "infra/can/driver.h", 5, {"child": "infra::Driver", "base": "CanPort",
-                                         "access": "public"}),
+    f(
+        INHERITS,
+        "infra/can/driver.h",
+        5,
+        {"child": "infra::Driver", "base": "CanPort", "access": "public"},
+    ),
     f(SYMBOL, "app/app.h", 2, {"kind": "class", "name": "App"}),
     f(FIELD_TYPE, "app/app.h", 4, {"owner": "App", "types": ["CanPort", "Unknown"]}),
     f(SYMBOL, "infra/can/driver.cpp", 9, {"kind": "function", "name": "Driver::sendFrame"}),
-    f(MESSAGE, "ports/can_port.h", 1, {"protocol": "canopen", "name": "SDO_TX", "id": 0x600},
-      source=PATTERN),
-    f(MESSAGE_IO, "app/main.cpp", 10, {"protocol": "can", "direction": "send",
-                                      "function": "sendFrame", "role": "call",
-                                      "args": ["SDO_TX"]}, Confidence.LOW, PATTERN),
-    f(MESSAGE_IO, "infra/can/driver.cpp", 9, {"protocol": "can", "direction": "send",
-                                             "function": "sendFrame", "role": "definition",
-                                             "args": []}, Confidence.LOW, PATTERN),
-    f(MESSAGE_IO, "tests/t.cpp", 5, {"protocol": "can", "direction": "send",
-                                    "function": "sendFrame", "role": "call", "args": []},
-      Confidence.LOW, PATTERN),
+    f(
+        MESSAGE,
+        "ports/can_port.h",
+        1,
+        {"protocol": "canopen", "name": "SDO_TX", "id": 0x600},
+        source=PATTERN,
+    ),
+    f(
+        MESSAGE_IO,
+        "app/main.cpp",
+        10,
+        {
+            "protocol": "can",
+            "direction": "send",
+            "function": "sendFrame",
+            "role": "call",
+            "args": ["SDO_TX"],
+        },
+        Confidence.LOW,
+        PATTERN,
+    ),
+    f(
+        MESSAGE_IO,
+        "infra/can/driver.cpp",
+        9,
+        {
+            "protocol": "can",
+            "direction": "send",
+            "function": "sendFrame",
+            "role": "definition",
+            "args": [],
+        },
+        Confidence.LOW,
+        PATTERN,
+    ),
+    f(
+        MESSAGE_IO,
+        "tests/t.cpp",
+        5,
+        {
+            "protocol": "can",
+            "direction": "send",
+            "function": "sendFrame",
+            "role": "call",
+            "args": [],
+        },
+        Confidence.LOW,
+        PATTERN,
+    ),
 ]
 
 
@@ -78,7 +141,8 @@ def test_component_edges_carry_weight_confidence_and_evidence() -> None:
     assert app_ports.weight == 2
     assert app_ports.confidence == "medium"
     assert [(e.file, e.line, e.fact) for e in app_ports.evidence] == [
-        ("app/app.h", 4, "field_type"), ("app/main.cpp", 1, "include"),
+        ("app/app.h", 4, "field_type"),
+        ("app/main.cpp", 1, "include"),
     ]
     assert edge(result, "app", "can", "depends").confidence == "low"
     can_ports = edge(result, "can", "ports", "depends")
@@ -126,5 +190,9 @@ def test_nodes_have_layers_groups_and_metrics() -> None:
     app = next(n for n in result.nodes if n.id == "app")
     assert (app.group, app.layer, app.paths) == ("layer_app", "app", ["app"])
     assert app.metrics == {"files": 2, "lines": 25}
-    assert [g.id for g in result.groups] == ["layer_app", "layer_ports", "layer_infra",
-                                             "layer_tests"]
+    assert [g.id for g in result.groups] == [
+        "layer_app",
+        "layer_ports",
+        "layer_infra",
+        "layer_tests",
+    ]

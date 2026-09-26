@@ -93,8 +93,9 @@ def _files_under(paths: Iterable[str], files: Collection[str]) -> set[str]:
     return out
 
 
-def score(model: ArchModelV2, expected: Expected, known_paths: frozenset[str],
-          files: Collection[str]) -> BenchReport:
+def score(
+    model: ArchModelV2, expected: Expected, known_paths: frozenset[str], files: Collection[str]
+) -> BenchReport:
     """Compare by file sets, so a coarser or finer split of the same code is still credited."""
     specs = {c.name: pathspec.GitIgnoreSpec.from_lines(c.paths) for c in expected.components}
     component_files = {
@@ -108,10 +109,16 @@ def score(model: ArchModelV2, expected: Expected, known_paths: frozenset[str],
     for name, wanted in component_files.items():
         if not wanted:
             continue
-        holders = [nid for nid, owned in node_files.items()
-                   if owned and len(owned & wanted) >= MAJORITY * len(wanted)]
-        inside = [nid for nid, owned in node_files.items()
-                  if owned and len(owned & wanted) >= INSIDE * len(owned)]
+        holders = [
+            nid
+            for nid, owned in node_files.items()
+            if owned and len(owned & wanted) >= MAJORITY * len(wanted)
+        ]
+        inside = [
+            nid
+            for nid, owned in node_files.items()
+            if owned and len(owned & wanted) >= INSIDE * len(owned)
+        ]
         covered = len(set().union(*(node_files[n] & wanted for n in inside))) if inside else 0
         for nid in {*holders, *inside}:
             membership[nid].add(name)
@@ -135,8 +142,7 @@ def score(model: ArchModelV2, expected: Expected, known_paths: frozenset[str],
     valid = sum(1 for p in all_paths if p in known_paths)
     forbidden = pathspec.GitIgnoreSpec.from_lines(expected.forbidden)
     junk = [
-        node.id for node in nodes
-        if any(_matches(forbidden, normalize_path(p)) for p in node.paths)
+        node.id for node in nodes if any(_matches(forbidden, normalize_path(p)) for p in node.paths)
     ]
 
     def ratio(hits: int, total: int) -> float:

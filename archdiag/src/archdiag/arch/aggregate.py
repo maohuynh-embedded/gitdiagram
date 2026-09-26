@@ -47,13 +47,26 @@ class _EdgeAcc:
     evidence: list[Evidence] = field(default_factory=list)
     labels: Counter[str] = field(default_factory=Counter)
 
-    def add(self, fact: Fact, detail: str, confidence: Confidence | None = None,
-            label: str | None = None) -> None:
+    def add(
+        self,
+        fact: Fact,
+        detail: str,
+        confidence: Confidence | None = None,
+        label: str | None = None,
+    ) -> None:
         conf = confidence or fact.confidence
         self.weight += 1
         self.confidence = max(self.confidence, conf)
-        self.evidence.append(Evidence(file=fact.file, line=fact.line, fact=fact.kind,
-                                      source=fact.source, confidence=conf.label, detail=detail))
+        self.evidence.append(
+            Evidence(
+                file=fact.file,
+                line=fact.line,
+                fact=fact.kind,
+                source=fact.source,
+                confidence=conf.label,
+                detail=detail,
+            )
+        )
         if label:
             self.labels[label] += 1
 
@@ -62,8 +75,16 @@ class _Edges:
     def __init__(self) -> None:
         self.items: dict[tuple[str, str, str], _EdgeAcc] = {}
 
-    def add(self, source: str, target: str, kind: str, fact: Fact, detail: str,
-            confidence: Confidence | None = None, label: str | None = None) -> None:
+    def add(
+        self,
+        source: str,
+        target: str,
+        kind: str,
+        fact: Fact,
+        detail: str,
+        confidence: Confidence | None = None,
+        label: str | None = None,
+    ) -> None:
         if source == target:
             return
         key = (source, target, kind)
@@ -76,12 +97,21 @@ class _Edges:
         for (source, target, kind), acc in sorted(self.items.items()):
             evidence = sorted(acc.evidence, key=lambda e: (e.file, e.line))
             label = ", ".join(name for name, _ in acc.labels.most_common(3)) or None
-            out.append(EdgeV2.model_validate({
-                "id": f"{source}__{kind}__{target}", "from": source, "to": target,
-                "label": label, "kind": kind, "weight": acc.weight,
-                "confidence": acc.confidence.label, "evidence": evidence[:MAX_EVIDENCE],
-                "evidence_total": len(evidence),
-            }))
+            out.append(
+                EdgeV2.model_validate(
+                    {
+                        "id": f"{source}__{kind}__{target}",
+                        "from": source,
+                        "to": target,
+                        "label": label,
+                        "kind": kind,
+                        "weight": acc.weight,
+                        "confidence": acc.confidence.label,
+                        "evidence": evidence[:MAX_EVIDENCE],
+                        "evidence_total": len(evidence),
+                    }
+                )
+            )
         return out
 
 
@@ -136,15 +166,19 @@ class _ClassIndex:
             return candidates[0]
         if candidates:
             near_dir = posixpath.dirname(near)
-            return max(candidates, key=lambda c: (
-                len(posixpath.commonpath([posixpath.dirname(c.file) or ".", near_dir or "."])),
-                c.name,
-            ))
+            return max(
+                candidates,
+                key=lambda c: (
+                    len(posixpath.commonpath([posixpath.dirname(c.file) or ".", near_dir or "."])),
+                    c.name,
+                ),
+            )
         return None
 
 
-def _message_ref(args: Sequence[str], by_name: Mapping[str, MessageV2],
-                 by_number: Mapping[int, MessageV2]) -> MessageV2 | None:
+def _message_ref(
+    args: Sequence[str], by_name: Mapping[str, MessageV2], by_number: Mapping[int, MessageV2]
+) -> MessageV2 | None:
     for arg in args:
         token = arg.strip().split("::")[-1]
         if token in by_name:
@@ -156,8 +190,12 @@ def _message_ref(args: Sequence[str], by_name: Mapping[str, MessageV2],
     return None
 
 
-def aggregate(components: Sequence[Component], facts: Sequence[Fact],
-              line_counts: Mapping[str, int], repo_name: str) -> Aggregation:
+def aggregate(
+    components: Sequence[Component],
+    facts: Sequence[Fact],
+    line_counts: Mapping[str, int],
+    repo_name: str,
+) -> Aggregation:
     component_of = {path: c.id for c in components for path in c.files}
     kind_of = {c.id: c.kind for c in components}
 
@@ -166,24 +204,36 @@ def aggregate(components: Sequence[Component], facts: Sequence[Fact],
     groups = [Group(id=layer_group_id(layer), label=layer) for layer in layers]
     nodes: list[NodeV2] = []
     for c in components:
-        nodes.append(NodeV2(
-            id=c.id, label=c.name, kind=c.kind, level="component",
-            group=layer_group_id(c.layer) if c.layer else None, layer=c.layer, origin=c.origin,
-            paths=list(c.paths) if c.origin == "inferred" and c.paths else _covering_dirs(c.files),
-            metrics={"files": len(c.files),
-                     "lines": sum(line_counts.get(f, 0) for f in c.files)},
-        ))
+        nodes.append(
+            NodeV2(
+                id=c.id,
+                label=c.name,
+                kind=c.kind,
+                level="component",
+                group=layer_group_id(c.layer) if c.layer else None,
+                layer=c.layer,
+                origin=c.origin,
+                paths=list(c.paths)
+                if c.origin == "inferred" and c.paths
+                else _covering_dirs(c.files),
+                metrics={
+                    "files": len(c.files),
+                    "lines": sum(line_counts.get(f, 0) for f in c.files),
+                },
+            )
+        )
 
     # --- classes --------------------------------------------------------------------------
     classes: dict[str, ClassInfo] = {}
     for fact in facts:
         if fact.kind == SYMBOL and fact.data.get("kind") in _CLASS_KINDS:
             name = str(fact.data["name"])
-            owner = component_of.get(fact.file)
-            if owner is None or name in classes:
+            home = component_of.get(fact.file)
+            if home is None or name in classes:
                 continue
-            classes[name] = ClassInfo(snake_id(name, "cls_"), name, str(fact.data["kind"]),
-                                      fact.file, fact.line, owner)
+            classes[name] = ClassInfo(
+                snake_id(name, "cls_"), name, str(fact.data["kind"]), fact.file, fact.line, home
+            )
     for fact in facts:
         if fact.kind == INTERFACE and fact.data.get("class") in classes:
             classes[str(fact.data["class"])].interface = True
@@ -202,7 +252,9 @@ def aggregate(components: Sequence[Component], facts: Sequence[Fact],
             continue
         source = component_of[fact.file]
         target_file = fact.data.get("target")
-        detail = f"#include {'<' if fact.data.get('system') else '\"'}{fact.data.get('spelled')}"
+        system = bool(fact.data.get("system"))
+        spelled = fact.data.get("spelled")
+        detail = f"#include <{spelled}>" if system else f'#include "{spelled}"'
         if target_file and target_file in component_of:
             edges.add(source, component_of[target_file], dep_kind(source), fact, detail)
         elif fact.data.get("external") and kind_of.get(source) != "test":
@@ -228,15 +280,14 @@ def aggregate(components: Sequence[Component], facts: Sequence[Fact],
             if owner is None:
                 continue
             for type_name in fact.data.get("types", []):
-                used = index.resolve(str(type_name), fact.file)
-                if used is None or used.name == owner.name:
+                part = index.resolve(str(type_name), fact.file)
+                if part is None or part.name == owner.name:
                     continue
-                used.references += 1
+                part.references += 1
                 owner.references += 1
-                detail = f"{owner.name} has {used.name}"
-                class_edges.add(owner.id, used.id, "composes", fact, detail)
-                edges.add(owner.component, used.component, dep_kind(owner.component), fact,
-                          detail)
+                detail = f"{owner.name} has {part.name}"
+                class_edges.add(owner.id, part.id, "composes", fact, detail)
+                edges.add(owner.component, part.component, dep_kind(owner.component), fact, detail)
 
     # --- messages -------------------------------------------------------------------------
     messages: dict[str, MessageV2] = {}
@@ -249,17 +300,25 @@ def aggregate(components: Sequence[Component], facts: Sequence[Fact],
         if message_id in messages:
             continue
         messages[message_id] = MessageV2(
-            id=message_id, protocol=protocol, name=name,
+            id=message_id,
+            protocol=protocol,
+            name=name,
             message_id=fact.data.get("id") if isinstance(fact.data.get("id"), int) else None,
             senders=[str(s) for s in fact.data.get("senders", [])],
             receivers=[str(r) for r in fact.data.get("receivers", [])],
-            confidence=fact.confidence.label, file=fact.file, line=fact.line,
+            confidence=fact.confidence.label,
+            file=fact.file,
+            line=fact.line,
         )
     by_name = {m.name: m for m in messages.values()}
     by_number = {m.message_id: m for m in messages.values() if m.message_id is not None}
     definers: dict[str, set[str]] = defaultdict(set)
     for fact in facts:
-        if fact.kind == SYMBOL and fact.data.get("kind") == "function" and fact.file in component_of:
+        if (
+            fact.kind == SYMBOL
+            and fact.data.get("kind") == "function"
+            and fact.file in component_of
+        ):
             definers[str(fact.data["name"]).rsplit("::", 1)[-1]].add(component_of[fact.file])
 
     uses_actor = False
@@ -291,21 +350,40 @@ def aggregate(components: Sequence[Component], facts: Sequence[Fact],
 
     # --- externals, actor and class nodes -------------------------------------------------
     for group, ext_id in sorted(externals.items(), key=lambda kv: kv[1]):
-        nodes.append(NodeV2(id=ext_id, label=group, kind="library", level="external",
-                            origin="inferred"))
+        nodes.append(
+            NodeV2(id=ext_id, label=group, kind="library", level="external", origin="inferred")
+        )
     if uses_actor:
-        nodes.append(NodeV2(id=ACTOR_ID, label="Device / bus", kind="actor", level="actor",
-                            description="Hardware or bus reached through protocol calls "
-                                        "(inferred from name patterns)."))
+        nodes.append(
+            NodeV2(
+                id=ACTOR_ID,
+                label="Device / bus",
+                kind="actor",
+                level="actor",
+                description="Hardware or bus reached through protocol calls "
+                "(inferred from name patterns).",
+            )
+        )
     for info in sorted(classes.values(), key=lambda c: c.id):
-        nodes.append(NodeV2(
-            id=info.id, label=info.name.rsplit("::", 1)[-1],
-            kind="interface" if info.interface else info.kind, level="class",
-            group=info.component, paths=[info.file],
-            metrics={"line": info.line, "references": info.references},
-        ))
+        nodes.append(
+            NodeV2(
+                id=info.id,
+                label=info.name.rsplit("::", 1)[-1],
+                kind="interface" if info.interface else info.kind,
+                level="class",
+                group=info.component,
+                paths=[info.file],
+                metrics={"line": info.line, "references": info.references},
+            )
+        )
 
     targets = [dict(f.data, file=f.file, line=f.line) for f in facts if f.kind == BUILD_TARGET]
-    return Aggregation(groups, nodes, edges.build() + class_edges.build(),
-                       sorted(messages.values(), key=lambda m: m.id), classes, component_of,
-                       targets)
+    return Aggregation(
+        groups,
+        nodes,
+        edges.build() + class_edges.build(),
+        sorted(messages.values(), key=lambda m: m.id),
+        classes,
+        component_of,
+        targets,
+    )

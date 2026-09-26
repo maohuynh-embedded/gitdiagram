@@ -4,8 +4,13 @@ from archdiag.facts.model import INCLUDE, TREESITTER, Confidence, Fact
 from archdiag.facts.resolve import IncludeResolver, external_group, resolve_includes
 
 FILES = {
-    "src/app/main.c", "src/app/app.h", "src/drivers/can/can.h", "src/hal/gpio.h",
-    "lib/a/config.h", "lib/b/config.h", "include/mylib/api.h",
+    "src/app/main.c",
+    "src/app/app.h",
+    "src/drivers/can/can.h",
+    "src/hal/gpio.h",
+    "lib/a/config.h",
+    "lib/b/config.h",
+    "include/mylib/api.h",
 }
 RESOLVER = IncludeResolver(FILES, ["src/hal", "include"])
 
@@ -40,11 +45,17 @@ def test_unresolved_becomes_external() -> None:
 @pytest.mark.parametrize(
     ("spelled", "group"),
     [
-        ("QObject", "Qt"), ("QtCore/QTimer", "Qt"), ("qqmlengine.h", "Qt"),
-        ("vector", "C/C++ standard library"), ("stdint.h", "C/C++ standard library"),
-        ("cstdio", "C/C++ standard library"), ("sys/ioctl.h", "Operating system"),
-        ("windows.h", "Operating system"), ("IOKit/IOKitLib.h", "Operating system"),
-        ("boost/asio.hpp", "boost"), ("libusb.h", "libusb"),
+        ("QObject", "Qt"),
+        ("QtCore/QTimer", "Qt"),
+        ("qqmlengine.h", "Qt"),
+        ("vector", "C/C++ standard library"),
+        ("stdint.h", "C/C++ standard library"),
+        ("cstdio", "C/C++ standard library"),
+        ("sys/ioctl.h", "Operating system"),
+        ("windows.h", "Operating system"),
+        ("IOKit/IOKitLib.h", "Operating system"),
+        ("boost/asio.hpp", "boost"),
+        ("libusb.h", "libusb"),
     ],
 )
 def test_external_groups(spelled: str, group: str) -> None:
@@ -53,12 +64,30 @@ def test_external_groups(spelled: str, group: str) -> None:
 
 def test_resolve_includes_updates_facts_and_confidence() -> None:
     facts = [
-        Fact(INCLUDE, "src/app/main.c", 1, TREESITTER, Confidence.MEDIUM,
-             {"spelled": "app.h", "system": False, "conditional": False}),
-        Fact(INCLUDE, "src/app/main.c", 2, TREESITTER, Confidence.LOW,
-             {"spelled": "gpio.h", "system": False, "conditional": True}),
-        Fact(INCLUDE, "src/app/main.c", 3, TREESITTER, Confidence.MEDIUM,
-             {"spelled": "stdio.h", "system": True, "conditional": False}),
+        Fact(
+            INCLUDE,
+            "src/app/main.c",
+            1,
+            TREESITTER,
+            Confidence.MEDIUM,
+            {"spelled": "app.h", "system": False, "conditional": False},
+        ),
+        Fact(
+            INCLUDE,
+            "src/app/main.c",
+            2,
+            TREESITTER,
+            Confidence.LOW,
+            {"spelled": "gpio.h", "system": False, "conditional": True},
+        ),
+        Fact(
+            INCLUDE,
+            "src/app/main.c",
+            3,
+            TREESITTER,
+            Confidence.MEDIUM,
+            {"spelled": "stdio.h", "system": True, "conditional": False},
+        ),
     ]
     resolved = resolve_includes(facts, RESOLVER)
     assert [f.data.get("target") for f in resolved] == ["src/app/app.h", "src/hal/gpio.h", None]

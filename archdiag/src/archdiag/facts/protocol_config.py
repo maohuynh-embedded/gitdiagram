@@ -32,19 +32,56 @@ PRESETS: dict[str, ProtocolPattern] = {
     "can": ProtocolPattern(
         "can",
         message_name_patterns=("*_CAN_ID", "CAN_ID_*", "*_MSG_ID", "MSG_ID_*"),
-        send_calls=("can_send*", "can_write*", "*CanSend*", "send*Frame*", "write*Frame*",
-                    "transmit*", "*Transmit*"),
-        recv_calls=("can_receive*", "can_read*", "*CanReceive*", "on*Frame*", "receive*Frame*",
-                    "read*Frame*", "handle*Frame*"),
+        send_calls=(
+            "can_send*",
+            "can_write*",
+            "*CanSend*",
+            "send*Frame*",
+            "write*Frame*",
+            "transmit*",
+            "*Transmit*",
+        ),
+        recv_calls=(
+            "can_receive*",
+            "can_read*",
+            "*CanReceive*",
+            "on*Frame*",
+            "receive*Frame*",
+            "read*Frame*",
+            "handle*Frame*",
+        ),
     ),
     "canopen": ProtocolPattern(
         "canopen",
-        message_name_patterns=("*_COB_ID", "COB_ID_*", "OD_*", "SDO_*", "PDO_*", "NMT_*",
-                               "*_SDO_*", "*_PDO_*"),
-        send_calls=("send*Sdo*", "write*Sdo*", "*SdoWrite*", "*SdoDownload*", "send*Pdo*",
-                    "send*Nmt*", "*sendSdo*", "*writeSdo*"),
-        recv_calls=("on*Sdo*", "handle*Sdo*", "*SdoRead*", "*SdoUpload*", "on*Pdo*",
-                    "handle*Pdo*", "dispatch*"),
+        message_name_patterns=(
+            "*_COB_ID",
+            "COB_ID_*",
+            "OD_*",
+            "SDO_*",
+            "PDO_*",
+            "NMT_*",
+            "*_SDO_*",
+            "*_PDO_*",
+        ),
+        send_calls=(
+            "send*Sdo*",
+            "write*Sdo*",
+            "*SdoWrite*",
+            "*SdoDownload*",
+            "send*Pdo*",
+            "send*Nmt*",
+            "*sendSdo*",
+            "*writeSdo*",
+        ),
+        recv_calls=(
+            "on*Sdo*",
+            "handle*Sdo*",
+            "*SdoRead*",
+            "*SdoUpload*",
+            "on*Pdo*",
+            "handle*Pdo*",
+            "dispatch*",
+        ),
     ),
 }
 DEFAULT_PRESETS = ("can", "canopen")
@@ -67,7 +104,9 @@ def _strings(value: object, where: str) -> tuple[str, ...]:
     return tuple(value)
 
 
-def load_protocol_config(data: dict[str, Any] | None, source: str = "archdiag.toml") -> ProtocolConfig:
+def load_protocol_config(
+    data: dict[str, Any] | None, source: str = "archdiag.toml"
+) -> ProtocolConfig:
     section = data or {}
     if not isinstance(section, dict):
         raise ConfigError(f"{source}: [protocol] must be a table")
@@ -83,10 +122,12 @@ def load_protocol_config(data: dict[str, Any] | None, source: str = "archdiag.to
         where = f"{source}: protocol.code[{index}]"
         if not isinstance(item, dict) or not isinstance(item.get("name"), str):
             raise ConfigError(f"{where} needs a name")
-        patterns.append(ProtocolPattern(
-            item["name"],
-            _strings(item.get("message_name_patterns"), f"{where}.message_name_patterns"),
-            _strings(item.get("send_calls"), f"{where}.send_calls"),
-            _strings(item.get("recv_calls"), f"{where}.recv_calls"),
-        ))
+        patterns.append(
+            ProtocolPattern(
+                item["name"],
+                _strings(item.get("message_name_patterns"), f"{where}.message_name_patterns"),
+                _strings(item.get("send_calls"), f"{where}.send_calls"),
+                _strings(item.get("recv_calls"), f"{where}.recv_calls"),
+            )
+        )
     return ProtocolConfig(tuple(patterns))

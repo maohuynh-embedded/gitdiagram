@@ -16,10 +16,21 @@ from archdiag.arch.config import ArchitectureConfig
 ROOT = "root"
 UNASSIGNED = "unassigned"
 UNLAYERED = "unlayered"
-_TEST_SEGMENTS = frozenset({
-    "test", "tests", "testing", "unittest", "unittests", "unit_tests", "ut", "it", "ft",
-    "spec", "specs",
-})
+_TEST_SEGMENTS = frozenset(
+    {
+        "test",
+        "tests",
+        "testing",
+        "unittest",
+        "unittests",
+        "unit_tests",
+        "ut",
+        "it",
+        "ft",
+        "spec",
+        "specs",
+    }
+)
 _TEST_NAME = re.compile(r"(^tests?_|_tests?$|^tst_)", re.I)
 _PROBE = "__archdiag_probe__"
 
@@ -54,7 +65,7 @@ def unique_ids(names: Iterable[str], prefix: str = "") -> list[str]:
         base, counter = candidate, 2
         while candidate in seen:
             suffix = f"_{counter}"
-            candidate = f"{base[:48 - len(suffix)]}{suffix}"
+            candidate = f"{base[: 48 - len(suffix)]}{suffix}"
             counter += 1
         seen.add(candidate)
         out.append(candidate)
@@ -73,7 +84,7 @@ def _children(files: Sequence[str], directory: str) -> tuple[list[str], dict[str
     direct: list[str] = []
     sub: dict[str, list[str]] = defaultdict(list)
     for path in files:
-        rest = path[len(prefix):]
+        rest = path[len(prefix) :]
         if "/" in rest:
             sub[prefix + rest.split("/", 1)[0]].append(path)
         else:
@@ -81,8 +92,9 @@ def _children(files: Sequence[str], directory: str) -> tuple[list[str], dict[str
     return direct, sub
 
 
-def _split(directory: str, files: list[str], max_files: int, atomic: Collection[str]
-           ) -> list[tuple[str, list[str]]]:
+def _split(
+    directory: str, files: list[str], max_files: int, atomic: Collection[str]
+) -> list[tuple[str, list[str]]]:
     if directory in atomic:
         return [(directory, files)]
     direct, sub = _children(files, directory)
@@ -112,8 +124,9 @@ def _merge_tiny(parts: list[tuple[str, list[str]]]) -> list[tuple[str, list[str]
     return sorted(by_dir.items())
 
 
-def infer_components(files: Sequence[str], atomic_dirs: Collection[str], max_files: int
-                     ) -> list[Component]:
+def infer_components(
+    files: Sequence[str], atomic_dirs: Collection[str], max_files: int
+) -> list[Component]:
     root_files, top = _children(sorted(files), "")
     parts: list[tuple[str, list[str]]] = []
     for directory in sorted(top):
@@ -125,7 +138,11 @@ def infer_components(files: Sequence[str], atomic_dirs: Collection[str], max_fil
     ids = unique_ids(names)
     return [
         Component(
-            cid, name, (directory,) if directory else (), tuple(sorted(members)), None,
+            cid,
+            name,
+            (directory,) if directory else (),
+            tuple(sorted(members)),
+            None,
             ROOT if not directory else ("test" if is_test_path(f"{directory}/x") else "module"),
             "inferred",
         )
@@ -143,26 +160,36 @@ def declared_components(files: Sequence[str], config: ArchitectureConfig) -> lis
     for path in files:
         owner = next((c.name for c, spec in specs if _matches(spec, path)), UNASSIGNED)
         members[owner].append(path)
-    names = [c.name for c in config.components] + (
-        [UNASSIGNED] if members.get(UNASSIGNED) else []
-    )
+    names = [c.name for c in config.components] + ([UNASSIGNED] if members.get(UNASSIGNED) else [])
     ids = unique_ids(names)
     layers = {c.name: c.layer for c in config.components}
     out = []
     for cid, name in zip(ids, names, strict=True):
         declared = next((c for c in config.components if c.name == name), None)
-        kind = UNASSIGNED if name == UNASSIGNED else (
-            "test" if members[name] and all(is_test_path(p) for p in members[name]) else "module"
+        kind = (
+            UNASSIGNED
+            if name == UNASSIGNED
+            else (
+                "test"
+                if members[name] and all(is_test_path(p) for p in members[name])
+                else "module"
+            )
         )
-        out.append(Component(
-            cid, name, declared.paths if declared else (), tuple(sorted(members[name])),
-            layers.get(name), kind, "declared" if declared else "inferred",
-        ))
+        out.append(
+            Component(
+                cid,
+                name,
+                declared.paths if declared else (),
+                tuple(sorted(members[name])),
+                layers.get(name),
+                kind,
+                "declared" if declared else "inferred",
+            )
+        )
     return out
 
 
-def assign_layers(components: Sequence[Component], config: ArchitectureConfig
-                  ) -> list[Component]:
+def assign_layers(components: Sequence[Component], config: ArchitectureConfig) -> list[Component]:
     out = []
     for component in components:
         if component.layer:
@@ -180,8 +207,9 @@ def assign_layers(components: Sequence[Component], config: ArchitectureConfig
     return out
 
 
-def build_components(files: Sequence[str], atomic_dirs: Collection[str],
-                     config: ArchitectureConfig) -> list[Component]:
+def build_components(
+    files: Sequence[str], atomic_dirs: Collection[str], config: ArchitectureConfig
+) -> list[Component]:
     if config.components:
         components = declared_components(files, config)
     else:

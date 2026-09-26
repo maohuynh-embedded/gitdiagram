@@ -69,9 +69,7 @@ class _HttpClient:
                 f"Run: ollama pull {self.settings.model}"
             )
         if response.status_code >= 400:
-            raise LLMError(
-                f"{path} returned HTTP {response.status_code}: {response.text[:300]}"
-            )
+            raise LLMError(f"{path} returned HTTP {response.status_code}: {response.text[:300]}")
         try:
             data: dict[str, Any] = response.json()
         except ValueError as exc:
@@ -83,17 +81,21 @@ class OllamaClient(_HttpClient):
     """Native Ollama API: the only one that accepts num_ctx, so prompts are not cut silently."""
 
     def chat(self, messages: Sequence[Message], schema: dict[str, Any]) -> str:
-        data = self._request("POST", "/api/chat", {
-            "model": self.settings.model,
-            "messages": list(messages),
-            "stream": False,
-            "format": schema,
-            "options": {
-                "num_ctx": self.settings.num_ctx,
-                "temperature": self.settings.temperature,
-                "seed": self.settings.seed,
+        data = self._request(
+            "POST",
+            "/api/chat",
+            {
+                "model": self.settings.model,
+                "messages": list(messages),
+                "stream": False,
+                "format": schema,
+                "options": {
+                    "num_ctx": self.settings.num_ctx,
+                    "temperature": self.settings.temperature,
+                    "seed": self.settings.seed,
+                },
             },
-        })
+        )
         try:
             return str(data["message"]["content"])
         except (KeyError, TypeError) as exc:
@@ -108,16 +110,20 @@ class OpenAICompatClient(_HttpClient):
     """LM Studio, llama.cpp server and other /v1 servers."""
 
     def chat(self, messages: Sequence[Message], schema: dict[str, Any]) -> str:
-        data = self._request("POST", "/chat/completions", {
-            "model": self.settings.model,
-            "messages": list(messages),
-            "temperature": self.settings.temperature,
-            "seed": self.settings.seed,
-            "response_format": {
-                "type": "json_schema",
-                "json_schema": {"name": "arch_model", "schema": schema},
+        data = self._request(
+            "POST",
+            "/chat/completions",
+            {
+                "model": self.settings.model,
+                "messages": list(messages),
+                "temperature": self.settings.temperature,
+                "seed": self.settings.seed,
+                "response_format": {
+                    "type": "json_schema",
+                    "json_schema": {"name": "arch_model", "schema": schema},
+                },
             },
-        })
+        )
         try:
             return str(data["choices"][0]["message"]["content"])
         except (KeyError, IndexError, TypeError) as exc:

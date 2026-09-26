@@ -25,9 +25,13 @@ def test_mini_repo_model_is_faithful_to_the_code(mini_repo: Path) -> None:
     components = {n.id: n for n in model.nodes if n.level == "component"}
     assert set(components) == {"src_app", "src_drivers", "src_hal", "tests"}
     assert components["tests"].kind == "test"
-    assert {("src_app", "src_drivers", "depends"), ("src_app", "src_hal", "depends"),
-            ("tests", "src_hal", "test"), ("src_drivers", "src_app", "message"),
-            ("src_drivers", "actor_device", "message")} <= edges(model)
+    assert {
+        ("src_app", "src_drivers", "depends"),
+        ("src_app", "src_hal", "depends"),
+        ("tests", "src_hal", "test"),
+        ("src_drivers", "src_app", "message"),
+        ("src_drivers", "actor_device", "message"),
+    } <= edges(model)
     # nothing the code does not show
     assert ("src_hal", "src_app", "depends") not in edges(model)
     assert ("src_drivers", "src_app", "depends") not in edges(model)
@@ -59,14 +63,16 @@ def test_declared_architecture_reports_violations(mini_repo: Path) -> None:
         '#include "gpio.h"\n#include "../app/app_state.h"\n'
     )
     (mini_repo / "src" / "app" / "app_state.h").write_text("int app_state;\n")
-    sections = {"architecture": {
-        "layers": ["application", "hal"],
-        "components": [
-            {"name": "app", "layer": "application", "paths": ["src/app/**"]},
-            {"name": "hal", "layer": "hal", "paths": ["src/hal/**", "src/drivers/**"]},
-            {"name": "tests", "paths": ["tests/**"]},
-        ],
-    }}
+    sections = {
+        "architecture": {
+            "layers": ["application", "hal"],
+            "components": [
+                {"name": "app", "layer": "application", "paths": ["src/app/**"]},
+                {"name": "hal", "layer": "hal", "paths": ["src/hal/**", "src/drivers/**"]},
+                {"name": "tests", "paths": ["tests/**"]},
+            ],
+        }
+    }
     model = analyze_static(mini_repo, mini_repo / ".archdiag", SETTINGS, sections).model
     rules = sorted((v.rule, v.source, v.target) for v in model.violations)
     assert ("layer-order", "hal", "app") in rules
@@ -77,20 +83,28 @@ def test_declared_architecture_reports_violations(mini_repo: Path) -> None:
 
 def test_invalid_declaration_is_a_config_error(mini_repo: Path) -> None:
     with pytest.raises(ConfigError):
-        analyze_static(mini_repo, mini_repo / ".archdiag", SETTINGS,
-                       {"architecture": {"layers": ["a", "a"]}})
+        analyze_static(
+            mini_repo, mini_repo / ".archdiag", SETTINGS, {"architecture": {"layers": ["a", "a"]}}
+        )
 
 
 def test_annotation_labels_components_and_edges_only(mini_repo: Path) -> None:
     replies = []
     # One reply per component (src_app, src_drivers, src_hal) then the system overview.
     for label in ("Application loop", "CAN driver", "GPIO HAL"):
-        replies.append(json.dumps({
-            "label": label, "description": f"{label} description.",
-            "responsibilities": ["one"],
-            "edge_labels": {"src_app__depends__src_drivers": "reads frames",
-                            "ghost__depends__x": "ignored"},
-        }))
+        replies.append(
+            json.dumps(
+                {
+                    "label": label,
+                    "description": f"{label} description.",
+                    "responsibilities": ["one"],
+                    "edge_labels": {
+                        "src_app__depends__src_drivers": "reads frames",
+                        "ghost__depends__x": "ignored",
+                    },
+                }
+            )
+        )
     replies.append(json.dumps({"title": "Mini ECU firmware", "explanation": "Overview text."}))
     client = FakeClient(replies)
     out = mini_repo / ".archdiag"

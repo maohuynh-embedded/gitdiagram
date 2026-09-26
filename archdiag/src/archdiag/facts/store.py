@@ -59,7 +59,8 @@ class FactStore:
             return None
         rows = self._db.execute(
             "SELECT path, kind, line, source, confidence, data FROM facts WHERE path = ? "
-            "ORDER BY id", (path,),
+            "ORDER BY id",
+            (path,),
         ).fetchall()
         return [Fact.from_row(r) for r in rows]
 
@@ -74,9 +75,7 @@ class FactStore:
             self._db.execute("INSERT OR REPLACE INTO files VALUES (?, ?)", (path, cache_key))
 
     def prune(self, keep: set[str]) -> None:
-        stale = [
-            row[0] for row in self._db.execute("SELECT path FROM files") if row[0] not in keep
-        ]
+        stale = [row[0] for row in self._db.execute("SELECT path FROM files") if row[0] not in keep]
         with self._db:
             for path in stale:
                 self._db.execute("DELETE FROM facts WHERE path = ?", (path,))

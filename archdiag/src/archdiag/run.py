@@ -52,19 +52,29 @@ def run_analysis(
         progress("mode", f"{chosen} analysis" + (" (auto)" if mode == "auto" else ""))
     if chosen == "llm":
         if client_factory is None:
-            raise ConfigError("This repository has no C/C++ code, so it needs the LLM path; "
-                              "run without --no-llm.")
-        result = analyze(repo, out, settings, client_factory(), use_cache=use_cache,
-                         progress=progress)
+            raise ConfigError(
+                "This repository has no C/C++ code, so it needs the LLM path; run without --no-llm."
+            )
+        result = analyze(
+            repo, out, settings, client_factory(), use_cache=use_cache, progress=progress
+        )
         detail = "cached result" if result.cached else f"{result.attempts} LLM attempt(s)"
-        return RunOutcome(result.model, result.warnings, "llm", result.cached, result.out_dir,
-                          detail)
+        return RunOutcome(
+            result.model, result.warnings, "llm", result.cached, result.out_dir, detail
+        )
     static = analyze_static(
-        repo, out, settings, load_sections(repo),
+        repo,
+        out,
+        settings,
+        load_sections(repo),
         client=client_factory() if client_factory else None,
-        compile_db=compile_db, rebuild=rebuild, progress=progress,
+        compile_db=compile_db,
+        rebuild=rebuild,
+        progress=progress,
     )
     components = sum(1 for n in static.model.nodes if n.level == "component")
-    detail = (f"{components} components, {len(static.model.violations)} violation(s), "
-              f"{len(static.model.views)} views")
+    detail = (
+        f"{components} components, {len(static.model.violations)} violation(s), "
+        f"{len(static.model.views)} views"
+    )
     return RunOutcome(static.model, static.warnings, "static", False, static.out_dir, detail)

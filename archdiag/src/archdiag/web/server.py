@@ -79,7 +79,8 @@ def create_app(repo: Path, out: Path, runner: Runner, port: int) -> FastAPI:
             "repo_name": root.name,
             "model": data,
             "explanation": explanation_path.read_text(encoding="utf-8")
-            if explanation_path.is_file() else "",
+            if explanation_path.is_file()
+            else "",
             "run": json.loads(run_path.read_text(encoding="utf-8")) if run_path.is_file() else {},
         }
 
@@ -90,8 +91,13 @@ def create_app(repo: Path, out: Path, runner: Runner, port: int) -> FastAPI:
         except FileNotFoundError as exc:
             raise HTTPException(404, "No analysis yet.") from exc
         return [
-            {"id": v["id"], "title": v["title"], "level": v.get("level"),
-             "parent": v.get("parent"), "description": v.get("description", "")}
+            {
+                "id": v["id"],
+                "title": v["title"],
+                "level": v.get("level"),
+                "parent": v.get("parent"),
+                "description": v.get("description", ""),
+            }
             for v in data.get("views", [])
         ]
 
@@ -134,16 +140,23 @@ def create_app(repo: Path, out: Path, runner: Runner, port: int) -> FastAPI:
 
         def work() -> None:
             try:
-                outcome = runner(lambda step, message: events.put(
-                    ("progress", {"step": step, "message": message})
-                ))
-                events.put(("done", {
-                    "mode": outcome.mode,
-                    "nodes": len(outcome.model.nodes),
-                    "edges": len(outcome.model.edges),
-                    "detail": outcome.detail,
-                    "warnings": list(outcome.warnings),
-                }))
+                outcome = runner(
+                    lambda step, message: events.put(
+                        ("progress", {"step": step, "message": message})
+                    )
+                )
+                events.put(
+                    (
+                        "done",
+                        {
+                            "mode": outcome.mode,
+                            "nodes": len(outcome.model.nodes),
+                            "edges": len(outcome.model.edges),
+                            "detail": outcome.detail,
+                            "warnings": list(outcome.warnings),
+                        },
+                    )
+                )
             except Exception as exc:  # reported to the page, never swallowed silently
                 events.put(("error", {"message": str(exc)}))
             finally:

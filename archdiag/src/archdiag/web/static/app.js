@@ -5,6 +5,8 @@ const $ = (id) => document.getElementById(id);
 
 const state = {
   payload: null,
+  views: [],
+  view: null,
   source: "",
   svg: null,
   nodeElements: new Map(),
@@ -35,11 +37,24 @@ function setStatus(text, kind = "") {
   el.hidden = !text;
 }
 
-function nodesById() {
-  return new Map((state.payload?.model.nodes ?? []).map((node) => [node.id, node]));
+function el(tag, props = {}, ...children) {
+  const node = document.createElement(tag);
+  for (const [key, value] of Object.entries(props)) {
+    if (key === "text") node.textContent = value;
+    else if (key === "onclick") node.addEventListener("click", value);
+    else node.setAttribute(key, value);
+  }
+  node.append(...children);
+  return node;
 }
 
-async function load() {
+const model = () => state.payload?.model ?? { nodes: [], edges: [], groups: [], views: [] };
+const nodesById = () => new Map(model().nodes.map((node) => [node.id, node]));
+const viewById = (id) => state.views.find((view) => view.id === id);
+
+// ---- loading ---------------------------------------------------------------------------------
+
+async function load(preferredView) {
   const response = await fetch("/api/model");
   if (response.status === 404) {
     state.payload = null;
@@ -50,47 +65,91 @@ async function load() {
   }
   if (!response.ok) throw new Error(`Could not load the model (HTTP ${response.status}).`);
   state.payload = await response.json();
-  const diagram = await fetch("/api/diagram");
-  state.source = diagram.ok ? await diagram.text() : "";
+  const views = await fetch("/api/views");
+  state.views = views.ok ? await views.json() : [];
   $("empty").hidden = true;
   renderMeta();
   renderExplanation();
-  await renderDiagram();
-  if (state.selected && nodesById().has(state.selected)) selectNode(state.selected);
-  else closeDetails();
+  renderViolations();
+  renderViewPicker();
+  const fromHash = decodeURIComponent(location.hash.replace(/^#view=/, ""));
+  const wanted = [preferredView, fromHash, state.view?.id, "dependencies", "overview"]
+    .find((id) => id && viewById(id));
+  await showView(wanted ?? state.views[0]?.id ?? null);
 }
 
 function renderMeta() {
-  const { model, run, repo_name: repoName } = state.payload;
-  $("title").textContent = model.title || repoName;
-  document.title = `${model.title || repoName} · archdiag`;
-  const bits = [repoName];
-  if (run.model) bits.push(run.model);
+  const { run, repo_name: repoName } = state.payload;
+  const title = model().title || repoName;
+  $("title").textContent = title;
+  document.title = `${title} · archdiag`;
+  const bits = [repoName, run.mode === "static" ? "static analysis" : "LLM only"];
+  if (run.model && run.annotated !== false) bits.push(run.model);
   if (run.created_at) bits.push(new Date(run.created_at).toLocaleString());
   $("meta").textContent = bits.join(" · ");
 
   const warnings = run.warnings ?? [];
   $("warnings-panel").hidden = warnings.length === 0;
-  $("warnings").replaceChildren(
-    ...warnings.map((warning) => {
-      const li = document.createElement("li");
-      li.textContent = warning;
+  $("warnings").replaceChildren(...warnings.map((warning) => el("li", { text: warning })));
+}
+
+function renderExplanation() {
+  const text = model().explanation || "";
+  const paragraphs = text.split(/\n\s*\n/).filter((p) => p.trim());
+  $("explanation").replaceChildren(
+    ...(paragraphs.length
+      ? paragraphs.map((p) => el("p", { text: p.trim() }))
+      : [el("p", { class: "none", text: "No written overview: static analysis only (--no-llm)." })]),
+  );
+}
+
+function renderViolations() {
+  const violations = model().violations ?? [];
+  $("violations-panel").hidden = violations.length === 0;
+  $("violations-count").textContent = violations.length ? `(${violations.length})` : "";
+  const byId = nodesById();
+  $("violations").replaceChildren(
+    ...violations.map((violation) => {
+      const li = el("li", {}, el("span", { class: "rule", text: violation.rule }),
+        el("span", { text: violation.message }));
+      const list = evidenceList(violation.evidence, violation.evidence_total);
+      if (list) li.append(list);
+      if (byId.has(violation.from)) {
+        li.append(el("button", {
+          type: "button", text: `Show ${byId.get(violation.from).label}`,
+          onclick: () => focusNode(violation.from),
+        }));
+      }
       return li;
     }),
   );
 }
 
-function renderExplanation() {
-  const paragraphs = (state.payload.model.explanation || "").split(/\n\s*\n/);
-  $("explanation").replaceChildren(
-    ...paragraphs
-      .filter((text) => text.trim())
-      .map((text) => {
-        const p = document.createElement("p");
-        p.textContent = text.trim();
-        return p;
-      }),
+function renderViewPicker() {
+  const select = $("view-select");
+  select.replaceChildren(
+    ...state.views.map((view) => el("option", {
+      value: view.id,
+      text: view.parent ? `   ↳ ${view.title}` : view.title,
+    })),
   );
+  select.hidden = state.views.length < 2;
+}
+
+// ---- views and rendering ---------------------------------------------------------------------
+
+async function showView(id) {
+  state.view = id ? viewById(id) : null;
+  $("view-select").value = id ?? "";
+  $("btn-up").hidden = !state.view?.parent;
+  $("view-description").textContent = state.view?.description ?? "";
+  if (id) history.replaceState(null, "", `#view=${encodeURIComponent(id)}`);
+  const url = id ? `/api/diagram?view=${encodeURIComponent(id)}` : "/api/diagram";
+  const response = await fetch(url);
+  state.source = response.ok ? await response.text() : "";
+  await renderDiagram();
+  if (state.selected && state.nodeElements.has(state.selected)) selectNode(state.selected);
+  else closeDetails();
 }
 
 function nodeIdOf(element, known) {
@@ -103,7 +162,11 @@ function nodeIdOf(element, known) {
 }
 
 async function renderDiagram() {
-  if (!state.source) return;
+  if (!state.source) {
+    $("viewport").replaceChildren();
+    state.svg = null;
+    return;
+  }
   state.renders += 1;
   const { svg } = await window.mermaid.render(`archdiag-graph-${state.renders}`, state.source);
   const clean = window.DOMPurify.sanitize(svg, {
@@ -133,14 +196,19 @@ async function renderDiagram() {
     element.setAttribute("tabindex", "0");
     element.setAttribute("role", "button");
     element.setAttribute("aria-label", known.get(id).label);
+    const activate = () => {
+      const child = viewById(`dependencies/${id}`);
+      if (known.get(id).level === "layer" && child) showView(child.id);
+      else selectNode(id);
+    };
     element.addEventListener("click", (event) => {
       event.stopPropagation();
-      selectNode(id);
+      activate();
     });
     element.addEventListener("keydown", (event) => {
       if (event.key === "Enter" || event.key === " ") {
         event.preventDefault();
-        selectNode(id);
+        activate();
       }
     });
   }
@@ -149,36 +217,55 @@ async function renderDiagram() {
   fit();
 }
 
-function vscodeLink(path) {
+// ---- details -----------------------------------------------------------------------------------
+
+function vscodeLink(path, line) {
   const root = state.payload.root.replace(/\/$/, "");
-  return `vscode://file${encodeURI(`${root}/${path}`)}`;
+  return `vscode://file${encodeURI(`${root}/${path}`)}${line ? `:${line}` : ""}`;
 }
 
-function edgeItem(otherId, label, byId) {
-  const li = document.createElement("li");
-  const button = document.createElement("button");
-  button.type = "button";
-  button.textContent = byId.get(otherId)?.label ?? otherId;
-  button.addEventListener("click", () => selectNode(otherId));
-  li.append(button);
-  if (label) {
-    const span = document.createElement("span");
-    span.className = "edge-label";
-    span.textContent = label;
-    li.append(span);
+function evidenceList(evidence, total) {
+  if (!evidence?.length) return null;
+  const list = el("ul", { class: "evidence" });
+  for (const item of evidence) {
+    list.append(el("li", {},
+      el("a", { href: vscodeLink(item.file, item.line), text: `${item.file}:${item.line}` }),
+      el("span", { class: `detail confidence-${item.confidence}`, text: item.detail || item.fact })));
   }
+  if (total > evidence.length) list.append(el("li", { class: "none", text: `… ${total - evidence.length} more` }));
+  return list;
+}
+
+function edgeItem(edge, otherId, byId) {
+  const li = el("li", {},
+    el("button", { type: "button", text: byId.get(otherId)?.label ?? otherId,
+                   onclick: () => focusNode(otherId) }),
+    el("span", { class: "meta-line",
+                 text: [edge.label, edge.kind, `×${edge.weight}`, edge.confidence]
+                   .filter(Boolean).join(" · ") }));
+  const list = evidenceList(edge.evidence, edge.evidence_total);
+  if (list) li.append(el("details", {}, el("summary", { text: "evidence" }), list));
   return li;
 }
 
 function listOrNone(listEl, items) {
-  if (items.length) {
-    listEl.replaceChildren(...items);
+  listEl.replaceChildren(...(items.length ? items : [el("li", { class: "none", text: "—" })]));
+}
+
+function focusNode(id) {
+  if (state.nodeElements.has(id)) {
+    selectNode(id);
     return;
   }
-  const li = document.createElement("li");
-  li.className = "none";
-  li.textContent = "—";
-  listEl.replaceChildren(li);
+  const node = nodesById().get(id);
+  const home = state.views.find((view) => view.node_ids?.includes?.(id))
+    ?? model().views.find((view) => view.node_ids.includes(id));
+  if (home && home.id !== state.view?.id) {
+    state.selected = id;
+    showView(home.id);
+  } else if (node) {
+    selectNode(id);
+  }
 }
 
 function selectNode(id) {
@@ -189,39 +276,34 @@ function selectNode(id) {
   state.selected = id;
   state.nodeElements.get(id)?.classList.add("selected");
 
-  const groups = new Map((state.payload.model.groups ?? []).map((g) => [g.id, g]));
+  const groups = new Map((model().groups ?? []).map((g) => [g.id, g]));
   $("details-title").textContent = node.label;
-  const group = node.group ? groups.get(node.group)?.label : null;
-  $("details-kind").textContent = group ? `${node.kind} · ${group}` : node.kind;
+  const facts = [node.kind];
+  if (node.layer) facts.push(`layer ${node.layer}`);
+  else if (node.group && groups.has(node.group)) facts.push(groups.get(node.group).label);
+  if (node.metrics?.files) facts.push(`${node.metrics.files} files`);
+  if (node.metrics?.lines) facts.push(`${node.metrics.lines} lines`);
+  $("details-kind").textContent = facts.join(" · ");
   $("details-description").textContent = node.description || "";
+  $("details-responsibilities").replaceChildren(
+    ...(node.responsibilities ?? []).map((item) => el("li", { text: item })));
 
-  listOrNone(
-    $("details-paths"),
-    node.paths.map((path) => {
-      const li = document.createElement("li");
-      const code = document.createElement("code");
-      code.textContent = path;
-      const open = document.createElement("a");
-      open.href = vscodeLink(path);
-      open.textContent = "Open";
-      open.title = "Open in VS Code";
-      const preview = document.createElement("button");
-      preview.type = "button";
-      preview.textContent = "Preview";
-      preview.addEventListener("click", () => previewFile(path));
-      li.append(code, open, preview);
-      return li;
-    }),
-  );
-  const edges = state.payload.model.edges ?? [];
-  listOrNone(
-    $("details-out"),
-    edges.filter((e) => e.from === id).map((e) => edgeItem(e.to, e.label, byId)),
-  );
-  listOrNone(
-    $("details-in"),
-    edges.filter((e) => e.to === id).map((e) => edgeItem(e.from, e.label, byId)),
-  );
+  const actions = [];
+  const classes = viewById(`classes/${id}`);
+  if (classes) actions.push(el("button", { type: "button", text: "Show classes",
+                                           onclick: () => showView(classes.id) }));
+  const layerView = viewById(`dependencies/${id}`);
+  if (layerView) actions.push(el("button", { type: "button", text: "Open layer",
+                                             onclick: () => showView(layerView.id) }));
+  $("details-actions").replaceChildren(...actions);
+
+  listOrNone($("details-paths"), node.paths.map((path) => el("li", {},
+    el("code", { text: path }),
+    el("a", { href: vscodeLink(path), text: "Open", title: "Open in VS Code" }),
+    el("button", { type: "button", text: "Preview", onclick: () => previewFile(path) }))));
+  const edges = model().edges ?? [];
+  listOrNone($("details-out"), edges.filter((e) => e.from === id).map((e) => edgeItem(e, e.to, byId)));
+  listOrNone($("details-in"), edges.filter((e) => e.to === id).map((e) => edgeItem(e, e.from, byId)));
   $("details").hidden = false;
 }
 
@@ -233,7 +315,6 @@ function closeDetails() {
 
 async function previewFile(path) {
   const response = await fetch(`/api/file?path=${encodeURIComponent(path)}`);
-  const viewer = $("viewer");
   $("viewer-path").textContent = path;
   $("viewer-open").href = vscodeLink(path);
   if (response.ok) {
@@ -242,10 +323,10 @@ async function previewFile(path) {
     const body = await response.json().catch(() => ({}));
     $("viewer-text").textContent = body.detail ?? `Preview unavailable (HTTP ${response.status}).`;
   }
-  viewer.showModal();
+  $("viewer").showModal();
 }
 
-// ---- pan and zoom -------------------------------------------------------------------------
+// ---- pan and zoom ------------------------------------------------------------------------------
 
 function applyTransform() {
   $("viewport").style.transform = `translate(${state.tx}px, ${state.ty}px) scale(${state.scale})`;
@@ -256,31 +337,27 @@ function fit() {
   const canvas = $("canvas").getBoundingClientRect();
   const width = Number(state.svg.getAttribute("width")) || state.svg.getBBox().width;
   const height = Number(state.svg.getAttribute("height")) || state.svg.getBBox().height;
-  const scale = Math.min(canvas.width / width, canvas.height / height, 2) * 0.92;
+  const scale = Math.min(canvas.width / width, (canvas.height - 40) / height, 2) * 0.92;
   state.scale = Number.isFinite(scale) && scale > 0 ? scale : 1;
   state.tx = (canvas.width - width * state.scale) / 2;
-  state.ty = (canvas.height - height * state.scale) / 2;
+  state.ty = (canvas.height - height * state.scale) / 2 + 10;
   applyTransform();
 }
 
 function setupPanZoom() {
   const canvas = $("canvas");
-  canvas.addEventListener(
-    "wheel",
-    (event) => {
-      event.preventDefault();
-      const rect = canvas.getBoundingClientRect();
-      const px = event.clientX - rect.left;
-      const py = event.clientY - rect.top;
-      const next = Math.min(8, Math.max(0.1, state.scale * Math.exp(-event.deltaY * 0.0015)));
-      const factor = next / state.scale;
-      state.tx = px - (px - state.tx) * factor;
-      state.ty = py - (py - state.ty) * factor;
-      state.scale = next;
-      applyTransform();
-    },
-    { passive: false },
-  );
+  canvas.addEventListener("wheel", (event) => {
+    event.preventDefault();
+    const rect = canvas.getBoundingClientRect();
+    const px = event.clientX - rect.left;
+    const py = event.clientY - rect.top;
+    const next = Math.min(8, Math.max(0.1, state.scale * Math.exp(-event.deltaY * 0.0015)));
+    const factor = next / state.scale;
+    state.tx = px - (px - state.tx) * factor;
+    state.ty = py - (py - state.ty) * factor;
+    state.scale = next;
+    applyTransform();
+  }, { passive: false });
   let drag = null;
   canvas.addEventListener("pointerdown", (event) => {
     if (event.target.closest?.("g.node.clickable")) return;
@@ -302,17 +379,16 @@ function setupPanZoom() {
   canvas.addEventListener("pointercancel", end);
 }
 
-// ---- export -------------------------------------------------------------------------------
+// ---- export ------------------------------------------------------------------------------------
 
 function baseName() {
-  return (state.payload?.repo_name || "diagram").replace(/[^\w.-]+/g, "_");
+  const view = state.view ? `-${state.view.id.replace(/\//g, "_")}` : "";
+  return `${state.payload?.repo_name || "diagram"}${view}`.replace(/[^\w.-]+/g, "_");
 }
 
 function download(blob, name) {
   const url = URL.createObjectURL(blob);
-  const link = document.createElement("a");
-  link.href = url;
-  link.download = name;
+  const link = el("a", { href: url, download: name });
   link.click();
   setTimeout(() => URL.revokeObjectURL(url), 1000);
 }
@@ -320,7 +396,7 @@ function download(blob, name) {
 function svgMarkup() {
   const clone = state.svg.cloneNode(true);
   clone.setAttribute("xmlns", "http://www.w3.org/2000/svg");
-  for (const el of clone.querySelectorAll(".selected")) el.classList.remove("selected");
+  for (const node of clone.querySelectorAll(".selected")) node.classList.remove("selected");
   return new XMLSerializer().serializeToString(clone);
 }
 
@@ -358,7 +434,7 @@ async function copyMermaid() {
   setTimeout(() => setStatus(""), 1500);
 }
 
-// ---- re-analysis over server-sent events ----------------------------------------------------
+// ---- re-analysis over server-sent events ---------------------------------------------------------
 
 function parseEvent(block) {
   let event = "message";
@@ -394,7 +470,7 @@ async function reanalyze() {
         buffer = buffer.slice(cut + 2);
         if (event === "progress") setStatus(`[${data.step}] ${data.message}`);
         if (event === "error") failed = data.message;
-        if (event === "done") setStatus(`Done: ${data.nodes} components, ${data.edges} relations.`);
+        if (event === "done") setStatus(`Done (${data.mode}): ${data.detail}.`);
       }
     }
     if (failed) throw new Error(failed);
@@ -406,9 +482,11 @@ async function reanalyze() {
   }
 }
 
-// ---- start ----------------------------------------------------------------------------------
+// ---- start -------------------------------------------------------------------------------------
 
 function wire() {
+  $("view-select").addEventListener("change", (event) => showView(event.target.value));
+  $("btn-up").addEventListener("click", () => state.view?.parent && showView(state.view.parent));
   $("btn-fit").addEventListener("click", fit);
   $("btn-copy").addEventListener("click", () => copyMermaid().catch((e) => setStatus(e.message, "error")));
   $("btn-svg").addEventListener("click", exportSvg);

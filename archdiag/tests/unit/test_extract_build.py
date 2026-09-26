@@ -4,10 +4,23 @@ from archdiag.facts.extract_build import extract_build
 from archdiag.facts.model import BUILD_TARGET, INCLUDE_DIR
 
 FILES = {
-    "CMakeLists.txt", "src/main.cpp", "src/app/app.cpp", "src/app/app.h",
-    "src/drivers/can.c", "src/drivers/can.h", "src/drivers/gpio.c", "lib/util/util.cpp",
-    "lib/util/CMakeLists.txt", "qt/app.pro", "qt/common.pri", "qt/main.cpp", "qt/view.cpp",
-    "qt/view.h", "qt/win_only.cpp", "qt/sub/sub.pro", "qt/sub/a.cpp",
+    "CMakeLists.txt",
+    "src/main.cpp",
+    "src/app/app.cpp",
+    "src/app/app.h",
+    "src/drivers/can.c",
+    "src/drivers/can.h",
+    "src/drivers/gpio.c",
+    "lib/util/util.cpp",
+    "lib/util/CMakeLists.txt",
+    "qt/app.pro",
+    "qt/common.pri",
+    "qt/main.cpp",
+    "qt/view.cpp",
+    "qt/view.h",
+    "qt/win_only.cpp",
+    "qt/sub/sub.pro",
+    "qt/sub/a.cpp",
 }
 
 CMAKE_ROOT = """
@@ -68,11 +81,19 @@ TEXTS = {
 
 
 def run() -> tuple[dict[str, dict[str, Any]], list[str], list[str]]:
-    build_files = ["CMakeLists.txt", "lib/util/CMakeLists.txt", "qt/app.pro", "qt/common.pri",
-                   "qt/sub/sub.pro"]
+    build_files = [
+        "CMakeLists.txt",
+        "lib/util/CMakeLists.txt",
+        "qt/app.pro",
+        "qt/common.pri",
+        "qt/sub/sub.pro",
+    ]
     facts, warnings = extract_build(FILES, build_files, TEXTS.__getitem__)
-    targets = {f.data["name"]: f.data | {"file": f.file, "line": f.line}
-               for f in facts if f.kind == BUILD_TARGET}
+    targets = {
+        f.data["name"]: f.data | {"file": f.file, "line": f.line}
+        for f in facts
+        if f.kind == BUILD_TARGET
+    }
     dirs = sorted(f.data["dir"] for f in facts if f.kind == INCLUDE_DIR)
     return targets, dirs, warnings
 
@@ -85,7 +106,10 @@ def test_cmake_targets_sources_include_dirs_and_links() -> None:
     assert demo["file"] == "CMakeLists.txt"
     assert demo["line"] == 9
     assert demo["sources"] == [
-        "src/app/app.cpp", "src/app/app.h", "src/drivers/can.c", "src/drivers/gpio.c",
+        "src/app/app.cpp",
+        "src/app/app.h",
+        "src/drivers/can.c",
+        "src/drivers/gpio.c",
         "src/main.cpp",
     ]
     assert demo["include_dirs"] == ["src", "src/app", "src/drivers"]

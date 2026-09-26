@@ -9,27 +9,43 @@ def comp(cid: str, layer: str, kind: str = "module") -> Component:
 
 
 COMPONENTS = [
-    comp("ui", "presentation"), comp("usecases", "application"), comp("model", "domain"),
-    comp("can", "infrastructure"), comp("tests", "tests", "test"),
+    comp("ui", "presentation"),
+    comp("usecases", "application"),
+    comp("model", "domain"),
+    comp("can", "infrastructure"),
+    comp("tests", "tests", "test"),
 ]
 
 
 def dep(source: str, target: str, kind: str = "depends") -> EdgeV2:
-    return EdgeV2.model_validate({"id": f"{source}__{kind}__{target}", "from": source,
-                                  "to": target, "kind": kind, "weight": 1,
-                                  "evidence_total": 1})
+    return EdgeV2.model_validate(
+        {
+            "id": f"{source}__{kind}__{target}",
+            "from": source,
+            "to": target,
+            "kind": kind,
+            "weight": 1,
+            "evidence_total": 1,
+        }
+    )
 
 
-CONFIG = load_architecture({
-    "layers": ["presentation", "application", "domain", "infrastructure"],
-    "components": [{"name": c.id, "paths": [f"{c.id}/**"]} for c in COMPONENTS],
-    "rules": [{"from": "domain", "deny": ["infrastructure"]}],
-})
+CONFIG = load_architecture(
+    {
+        "layers": ["presentation", "application", "domain", "infrastructure"],
+        "components": [{"name": c.id, "paths": [f"{c.id}/**"]} for c in COMPONENTS],
+        "rules": [{"from": "domain", "deny": ["infrastructure"]}],
+    }
+)
 
 
 def test_clean_downward_dependencies_have_no_violations() -> None:
-    edges = [dep("ui", "usecases"), dep("usecases", "model"), dep("usecases", "can"),
-             dep("tests", "ui", "test")]
+    edges = [
+        dep("ui", "usecases"),
+        dep("usecases", "model"),
+        dep("usecases", "can"),
+        dep("tests", "ui", "test"),
+    ]
     assert check_rules(COMPONENTS, edges, CONFIG) == []
 
 
@@ -54,8 +70,9 @@ def test_allow_upward_disables_layer_order() -> None:
 
 
 def test_unassigned_files_are_reported() -> None:
-    stray = Component("unassigned", "unassigned", (), ("tools/a.py", "tools/b.py"), None,
-                      "unassigned", "inferred")
+    stray = Component(
+        "unassigned", "unassigned", (), ("tools/a.py", "tools/b.py"), None, "unassigned", "inferred"
+    )
     violations = check_rules([*COMPONENTS, stray], [], CONFIG)
     assert [(v.rule, v.evidence_total) for v in violations] == [("unassigned", 2)]
 

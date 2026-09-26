@@ -30,10 +30,21 @@ def test_dbc_messages_with_senders_and_receivers() -> None:
     assert all(f.kind == MESSAGE and f.source == PROTOCOL_FILE for f in facts)
     assert all(f.confidence == Confidence.HIGH for f in facts)
     assert [f.data for f in facts] == [
-        {"protocol": "can", "id": 256, "name": "EngineData", "senders": ["ECU1"],
-         "receivers": ["ECU2", "GATEWAY"]},
-        {"protocol": "can", "id": 0x200, "name": "ExtendedStatus", "senders": [],
-         "receivers": [], "extended": True},
+        {
+            "protocol": "can",
+            "id": 256,
+            "name": "EngineData",
+            "senders": ["ECU1"],
+            "receivers": ["ECU2", "GATEWAY"],
+        },
+        {
+            "protocol": "can",
+            "id": 0x200,
+            "name": "ExtendedStatus",
+            "senders": [],
+            "receivers": [],
+            "extended": True,
+        },
     ]
     assert [f.line for f in facts] == [3, 6]
 

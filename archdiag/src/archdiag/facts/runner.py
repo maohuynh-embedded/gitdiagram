@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import hashlib
+import json
 import os
 from collections.abc import Callable
 from concurrent.futures import ProcessPoolExecutor
@@ -40,10 +41,16 @@ def _ts_job(job: tuple[str, str, str, ProtocolConfig]) -> list[Fact]:
     return extract_ts.extract_file(path, source, language, protocols)
 
 
-def _clang_job(job: tuple[str, extract_clang.CompileEntry, frozenset[str]]
-               ) -> tuple[list[Fact], list[str], str | None]:
+def _clang_job(
+    job: tuple[str, extract_clang.CompileEntry, frozenset[str]],
+) -> tuple[list[Fact], list[str], str | None]:
     root, entry, files = job
     return extract_clang.extract_tu(root, entry, files)
+
+
+def _fact_key(fact: Fact) -> tuple[str, str, int, str]:
+    # A TU and the headers it includes are seen by many TUs; keep each fact once.
+    return (fact.kind, fact.file, fact.line, json.dumps(fact.data, sort_keys=True))
 
 
 def _noop(step: str, message: str) -> None:
@@ -103,10 +110,10 @@ def collect_facts(
             result.warnings.append(f"Parallel parsing failed ({exc}); parsed serially instead.")
     if outputs is None:
         outputs = [_ts_job(job) for job in jobs]
-    for job, facts in zip(jobs, outputs, strict=True):
+    for job, parsed in zip(jobs, outputs, strict=True):
         path = job[1]
-        per_file[path] = facts
-        store.replace(path, keys[path], facts)
+        per_file[path] = parsed
+        store.replace(path, keys[path], parsed)
     result.stats.update(c_files=len(keys), parsed=len(jobs), cached=len(keys) - len(jobs))
 
     # protocol description files
@@ -134,29 +141,32 @@ def collect_facts(
                 "only. Install it with: pip install 'archdiag[clang]'"
             )
         elif entries:
-            headers = hashlib.sha256("".join(
-                snapshot.hashes.get(p, "") for p in sorted(files)
-                if p.endswith((".h", ".hh", ".hpp", ".hxx", ".inl"))
-            ).encode()).hexdigest()[:16]
+            headers = hashlib.sha256(
+                "".join(
+                    snapshot.hashes.get(p, "")
+                    for p in sorted(files)
+                    if p.endswith((".h", ".hh", ".hpp", ".hxx", ".inl"))
+                ).encode()
+            ).hexdigest()[:16]
             todo = []
-            for entry in entries:
+            for unit in entries:
                 key = hashlib.sha256(
-                    f"{extract_clang.EXTRACTOR_VERSION}:{snapshot.hashes.get(entry.file)}:"
-                    f"{headers}:{' '.join(entry.args)}".encode()
+                    f"{extract_clang.EXTRACTOR_VERSION}:{snapshot.hashes.get(unit.file)}:"
+                    f"{headers}:{' '.join(unit.args)}".encode()
                 ).hexdigest()
-                cache_path = f"{_CLANG_PREFIX}{entry.file}"
+                cache_path = f"{_CLANG_PREFIX}{unit.file}"
                 keep.add(cache_path)
                 cached = store.cached(cache_path, key)
                 if cached is not None:
                     for fact in cached:
-                        clang_facts[(fact.kind, fact.file, fact.line, repr(sorted(fact.data)))] = fact
+                        clang_facts[_fact_key(fact)] = fact
                         covered.add(fact.file)
-                    covered.add(entry.file)
+                    covered.add(unit.file)
                 else:
-                    todo.append((entry, key, cache_path))
+                    todo.append((unit, key, cache_path))
             report("facts", f"libclang: {len(entries)} translation units, {len(todo)} to parse")
             frozen = frozenset(files)
-            jobs_clang = [(root, entry, frozen) for entry, _, _ in todo]
+            jobs_clang = [(root, unit, frozen) for unit, _, _ in todo]
             clang_out: list[tuple[list[Fact], list[str], str | None]] | None = None
             if len(jobs_clang) > 1 and _workers(workers) > 1:
                 try:
@@ -167,7 +177,7 @@ def collect_facts(
             if clang_out is None:
                 clang_out = [_clang_job(job) for job in jobs_clang]
             failed = 0
-            for (entry, key, cache_path), (facts, files_covered, error) in zip(
+            for (_unit, key, cache_path), (facts, files_covered, error) in zip(
                 todo, clang_out, strict=True
             ):
                 if error:
@@ -177,23 +187,23 @@ def collect_facts(
                 store.replace(cache_path, key, facts)
                 covered.update(files_covered)
                 for fact in facts:
-                    clang_facts[(fact.kind, fact.file, fact.line, repr(sorted(fact.data)))] = fact
+                    clang_facts[_fact_key(fact)] = fact
             result.stats.update(clang_units=len(entries), clang_failed=failed)
     store.prune(keep)
 
-    facts: list[Fact] = []
+    merged: list[Fact] = []
     for path in sorted(per_file):
-        facts.extend(
+        merged.extend(
             f for f in per_file[path] if not (path in covered and f.kind in STRUCTURAL_KINDS)
         )
-    facts.extend(clang_facts.values())
-    facts.extend(protocol_facts)
-    facts.extend(build_facts)
+    merged.extend(clang_facts.values())
+    merged.extend(protocol_facts)
+    merged.extend(build_facts)
 
     include_dirs = [f.data["dir"] for f in build_facts if f.kind == INCLUDE_DIR]
     for fact in build_facts:
         if fact.kind == BUILD_TARGET:
             include_dirs.extend(fact.data["include_dirs"])
-    result.facts = resolve_includes(facts, IncludeResolver(files, include_dirs))
+    result.facts = resolve_includes(merged, IncludeResolver(files, include_dirs))
     result.stats["facts"] = len(result.facts)
     return result

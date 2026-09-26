@@ -46,8 +46,9 @@ def _strings(value: object, where: str, allow_empty: bool = True) -> tuple[str, 
     return tuple(value)
 
 
-def load_architecture(data: dict[str, Any] | None, source: str = "archdiag.toml"
-                      ) -> ArchitectureConfig:
+def load_architecture(
+    data: dict[str, Any] | None, source: str = "archdiag.toml"
+) -> ArchitectureConfig:
     section = data or {}
     if not isinstance(section, dict):
         raise ConfigError(f"{source}: [architecture] must be a table")
@@ -69,9 +70,13 @@ def load_architecture(data: dict[str, Any] | None, source: str = "archdiag.toml"
         layer = item.get("layer")
         if layer is not None and (not isinstance(layer, str) or layer not in layers):
             raise ConfigError(f"{where}: layer '{layer}' is not one of architecture.layers")
-        components.append(DeclaredComponent(
-            item["name"], _strings(item.get("paths"), f"{where}.paths", allow_empty=False), layer
-        ))
+        components.append(
+            DeclaredComponent(
+                item["name"],
+                _strings(item.get("paths"), f"{where}.paths", allow_empty=False),
+                layer,
+            )
+        )
     names = [c.name for c in components]
     if len(set(names)) != len(names):
         raise ConfigError(f"{source}: architecture.components has duplicate names")

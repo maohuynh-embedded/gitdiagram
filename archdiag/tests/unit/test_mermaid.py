@@ -16,10 +16,22 @@ def build(**overrides: Any) -> ArchModel:
             {"id": "empty", "label": "Empty"},
         ],
         "nodes": [
-            {"id": "app", "label": "App", "kind": "application", "group": "firmware",
-             "paths": ["src/app"], "description": "Main loop"},
-            {"id": "can", "label": "CAN driver", "kind": "driver", "group": "drivers",
-             "paths": ["src/drivers/can"], "description": "Frames"},
+            {
+                "id": "app",
+                "label": "App",
+                "kind": "application",
+                "group": "firmware",
+                "paths": ["src/app"],
+                "description": "Main loop",
+            },
+            {
+                "id": "can",
+                "label": "CAN driver",
+                "kind": "driver",
+                "group": "drivers",
+                "paths": ["src/drivers/can"],
+                "description": "Frames",
+            },
             {"id": "tool", "label": "Flasher", "kind": "tool", "paths": [], "description": ""},
         ],
         "edges": [
@@ -76,13 +88,22 @@ def test_output_is_deterministic() -> None:
 
 
 def test_output_never_contains_links_or_scripts() -> None:
-    hostile = build(nodes=[
-        {"id": "evil", "label": 'x"] click evil href "javascript:alert(1)', "kind": "x",
-         "paths": [], "description": ""},
-    ], edges=[], groups=[])
+    hostile = build(
+        nodes=[
+            {
+                "id": "evil",
+                "label": 'x"] click evil href "javascript:alert(1)',
+                "kind": "x",
+                "paths": [],
+                "description": "",
+            },
+        ],
+        edges=[],
+        groups=[],
+    )
     text = compile_mermaid(hostile)
     body = "\n".join(line for line in text.splitlines() if not line.startswith("%%"))
-    assert 'x#34;#93; click' in body
+    assert "x#34;#93; click" in body
     assert '"javascript' not in body
     for line in body.splitlines():
         assert not line.strip().startswith(("click", "href", "style", "classDef"))

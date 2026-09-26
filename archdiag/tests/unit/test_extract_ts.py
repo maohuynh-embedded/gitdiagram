@@ -99,7 +99,9 @@ def test_includes_and_conditional_flag() -> None:
     ]
     assert [f.line for f in of(facts, INCLUDE)] == [3, 4, 6]
     assert [f.confidence for f in of(facts, INCLUDE)] == [
-        Confidence.MEDIUM, Confidence.MEDIUM, Confidence.LOW,
+        Confidence.MEDIUM,
+        Confidence.MEDIUM,
+        Confidence.LOW,
     ]
 
 
@@ -135,16 +137,41 @@ def test_messages_from_defines_enums_and_constants() -> None:
 def test_message_io_from_calls_and_definitions() -> None:
     facts = extract_file("src/impl.cpp", SOURCE, "cpp", PROTOCOLS)
     io = data(facts, MESSAGE_IO)
-    assert {"protocol": "can", "direction": "send", "function": "sendFrame",
-            "role": "definition", "args": []} in io
-    assert {"protocol": "can", "direction": "send", "function": "transmit",
-            "role": "call", "args": ["id"]} in io
-    assert {"protocol": "can", "direction": "send", "function": "sendFrame",
-            "role": "call", "args": ["SDO_TX"]} in io
-    assert {"protocol": "canopen", "direction": "send", "function": "sendSdo",
-            "role": "call", "args": ["0x601", "1"]} in io
-    assert {"protocol": "can", "direction": "recv", "function": "onFrameReceived",
-            "role": "definition", "args": []} in io
+    assert {
+        "protocol": "can",
+        "direction": "send",
+        "function": "sendFrame",
+        "role": "definition",
+        "args": [],
+    } in io
+    assert {
+        "protocol": "can",
+        "direction": "send",
+        "function": "transmit",
+        "role": "call",
+        "args": ["id"],
+    } in io
+    assert {
+        "protocol": "can",
+        "direction": "send",
+        "function": "sendFrame",
+        "role": "call",
+        "args": ["SDO_TX"],
+    } in io
+    assert {
+        "protocol": "canopen",
+        "direction": "send",
+        "function": "sendSdo",
+        "role": "call",
+        "args": ["0x601", "1"],
+    } in io
+    assert {
+        "protocol": "can",
+        "direction": "recv",
+        "function": "onFrameReceived",
+        "role": "definition",
+        "args": [],
+    } in io
     assert not any(d["function"] == "helper" for d in io)
     assert all(f.confidence == Confidence.LOW for f in of(facts, MESSAGE_IO))
 

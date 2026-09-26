@@ -124,8 +124,9 @@ def clang_setup() -> ClangSetup | None:
                     break
     if platform.system() == "Darwin" and shutil.which("xcrun"):
         try:
-            sdk = subprocess.run(["xcrun", "--show-sdk-path"], capture_output=True, text=True,
-                                 timeout=10).stdout.strip()
+            sdk = subprocess.run(
+                ["xcrun", "--show-sdk-path"], capture_output=True, text=True, timeout=10
+            ).stdout.strip()
         except (OSError, subprocess.SubprocessError):
             sdk = ""
         if sdk:
@@ -158,8 +159,11 @@ def _type_names(type_: Any) -> list[str]:
     pending = [type_]
     while pending and len(names) < 8:
         current = pending.pop(0)
-        while current.kind in (ci.TypeKind.POINTER, ci.TypeKind.LVALUEREFERENCE,
-                               ci.TypeKind.RVALUEREFERENCE):
+        while current.kind in (
+            ci.TypeKind.POINTER,
+            ci.TypeKind.LVALUEREFERENCE,
+            ci.TypeKind.RVALUEREFERENCE,
+        ):
             current = current.get_pointee()
         declaration = current.get_declaration()
         if declaration.kind != ci.CursorKind.NO_DECL_FOUND:
@@ -171,8 +175,9 @@ def _type_names(type_: Any) -> list[str]:
     return list(dict.fromkeys(names))
 
 
-def extract_tu(root: str, entry: CompileEntry, repo_files: frozenset[str]
-               ) -> tuple[list[Fact], list[str], str | None]:
+def extract_tu(
+    root: str, entry: CompileEntry, repo_files: frozenset[str]
+) -> tuple[list[Fact], list[str], str | None]:
     """Returns (facts, repository files covered, error)."""
     import clang.cindex as ci
 
@@ -193,13 +198,13 @@ def extract_tu(root: str, entry: CompileEntry, repo_files: frozenset[str]
             return None
 
     index = ci.Index.create()
-    options = (ci.TranslationUnit.PARSE_SKIP_FUNCTION_BODIES
-               | ci.TranslationUnit.PARSE_INCOMPLETE)
+    options = ci.TranslationUnit.PARSE_SKIP_FUNCTION_BODIES | ci.TranslationUnit.PARSE_INCOMPLETE
     cwd = os.getcwd()
     try:
         os.chdir(entry.directory)
-        tu = index.parse(str(base / entry.file), args=[*entry.args, *setup.extra_args],
-                         options=options)
+        tu = index.parse(
+            str(base / entry.file), args=[*entry.args, *setup.extra_args], options=options
+        )
     except (ci.TranslationUnitLoadError, OSError) as exc:
         return [], [], f"{entry.file}: {exc}"
     finally:
@@ -221,15 +226,22 @@ def extract_tu(root: str, entry: CompileEntry, repo_files: frozenset[str]
         covered.add(source)
         target = rel(inclusion.include.name if inclusion.include else None)
         name = Path(inclusion.include.name).name if inclusion.include else ""
-        data: dict[str, Any] = {"spelled": name, "system": target not in repo_files,
-                                "conditional": False,
-                                "target": target if target in repo_files else None}
+        data: dict[str, Any] = {
+            "spelled": name,
+            "system": target not in repo_files,
+            "conditional": False,
+            "target": target if target in repo_files else None,
+        }
         if data["target"] is None:
             data["external"] = external_group(name)
         add(INCLUDE, source, inclusion.location.line, data)
 
-    class_kinds = {ci.CursorKind.CLASS_DECL: "class", ci.CursorKind.STRUCT_DECL: "struct",
-                   ci.CursorKind.CLASS_TEMPLATE: "class", ci.CursorKind.UNION_DECL: "union"}
+    class_kinds = {
+        ci.CursorKind.CLASS_DECL: "class",
+        ci.CursorKind.STRUCT_DECL: "struct",
+        ci.CursorKind.CLASS_TEMPLATE: "class",
+        ci.CursorKind.UNION_DECL: "union",
+    }
 
     def visit(cursor: Any) -> None:
         for child in cursor.get_children():
@@ -247,20 +259,34 @@ def extract_tu(root: str, entry: CompileEntry, repo_files: frozenset[str]
                 for member in child.get_children():
                     if member.kind == ci.CursorKind.CXX_BASE_SPECIFIER:
                         declaration = member.type.get_declaration()
-                        base_name = (_qualified(declaration)
-                                     if declaration.kind != ci.CursorKind.NO_DECL_FOUND
-                                     else member.type.spelling)
-                        add(INHERITS, file, member.location.line, {
-                            "child": owner, "base": base_name,
-                            "access": member.access_specifier.name.lower(),
-                        })
-                    elif member.kind == ci.CursorKind.CXX_METHOD and member.is_pure_virtual_method():
+                        base_name = (
+                            _qualified(declaration)
+                            if declaration.kind != ci.CursorKind.NO_DECL_FOUND
+                            else member.type.spelling
+                        )
+                        add(
+                            INHERITS,
+                            file,
+                            member.location.line,
+                            {
+                                "child": owner,
+                                "base": base_name,
+                                "access": member.access_specifier.name.lower(),
+                            },
+                        )
+                    elif (
+                        member.kind == ci.CursorKind.CXX_METHOD and member.is_pure_virtual_method()
+                    ):
                         pure = True
                     elif member.kind == ci.CursorKind.FIELD_DECL:
                         names = _type_names(member.type)
                         if names:
-                            add(FIELD_TYPE, file, member.location.line,
-                                {"owner": owner, "types": names})
+                            add(
+                                FIELD_TYPE,
+                                file,
+                                member.location.line,
+                                {"owner": owner, "types": names},
+                            )
                 if pure:
                     add(INTERFACE, file, child.location.line, {"class": owner})
                 visit(child)
@@ -269,8 +295,12 @@ def extract_tu(root: str, entry: CompileEntry, repo_files: frozenset[str]
             elif kind in (ci.CursorKind.FUNCTION_DECL, ci.CursorKind.CXX_METHOD) and (
                 child.is_definition()
             ):
-                add(SYMBOL, file, child.location.line,
-                    {"kind": "function", "name": _qualified(child)})
+                add(
+                    SYMBOL,
+                    file,
+                    child.location.line,
+                    {"kind": "function", "name": _qualified(child)},
+                )
 
     visit(tu.cursor)
     return facts, sorted(covered), None

@@ -112,11 +112,13 @@ def check_structure(model: ArchModel) -> list[str]:
     for index, edge in enumerate(model.edges):
         for end in (edge.source, edge.target):
             if end not in node_ids:
-                errors.append(f"Edge {index} ({edge.source} -> {edge.target}) references "
-                              f"unknown node '{end}'.")
+                errors.append(
+                    f"Edge {index} ({edge.source} -> {edge.target}) references "
+                    f"unknown node '{end}'."
+                )
         if edge.source == edge.target:
             errors.append(f"Edge {index} points to itself ('{edge.source}').")
-    return errors[:_MAX_REPORTED * 2]
+    return errors[: _MAX_REPORTED * 2]
 
 
 def _path_problems(model: ArchModel, known_paths: frozenset[str]) -> list[str]:

@@ -179,3 +179,45 @@ code, pre { font-family: var(--mono); font-size: 12.5px; }
   .side { border-left: none; border-top: 1px solid var(--border); overflow: visible; }
   .bar { padding: 8px 16px; }
 }
+
+.visually-hidden {
+  position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0);
+  white-space: nowrap;
+}
+select {
+  font: inherit;
+  border: 1px solid var(--border);
+  background: var(--surface);
+  color: var(--text);
+  border-radius: 6px;
+  padding: 5px 8px;
+  max-width: 260px;
+}
+.view-description {
+  position: absolute;
+  left: 12px;
+  top: 8px;
+  right: 12px;
+  margin: 0;
+  font-size: 12px;
+  color: var(--muted);
+  pointer-events: none;
+}
+.count { color: var(--muted); font-weight: normal; }
+.bullets { margin: 0 0 8px; padding-left: 18px; }
+.row-actions { display: flex; gap: 6px; flex-wrap: wrap; margin: 0; }
+.row-actions:empty { display: none; }
+.links li { padding: 3px 0; }
+.links .meta-line { color: var(--muted); font-size: 12px; margin-left: 4px; }
+.links details { margin: 2px 0 0 4px; }
+.links summary { cursor: pointer; color: var(--muted); font-size: 12px; }
+.evidence { list-style: none; padding: 0 0 0 8px; margin: 4px 0; font-size: 12px; }
+.evidence li { padding: 1px 0; }
+.evidence a { font-family: var(--mono); }
+.evidence .detail { color: var(--muted); margin-left: 6px; }
+.confidence-low { color: var(--warn); }
+.violations { list-style: none; padding: 0; margin: 0; }
+.violations li { padding: 6px 0; border-top: 1px solid var(--border); font-size: 13px; }
+.violations li:first-child { border-top: none; }
+.violations .rule { font-weight: 600; color: var(--danger); margin-right: 6px; }
+.violations button { margin-top: 4px; padding: 1px 8px; font-size: 12px; }

@@ -58,10 +58,17 @@ def _noop(step: str, message: str) -> None:
 
 
 def cache_key(snapshot: RepoSnapshot, settings: Settings) -> str:
-    material = json.dumps([
-        snapshot.content_hash, settings.api, settings.model, settings.language,
-        settings.context_budget_tokens, PROMPT_VERSION, SCHEMA_VERSION,
-    ])
+    material = json.dumps(
+        [
+            snapshot.content_hash,
+            settings.api,
+            settings.model,
+            settings.language,
+            settings.context_budget_tokens,
+            PROMPT_VERSION,
+            SCHEMA_VERSION,
+        ]
+    )
     return hashlib.sha256(material.encode()).hexdigest()
 
 
@@ -85,8 +92,9 @@ def _load_cached(out: Path, key: str) -> AnalysisResult | None:
     return AnalysisResult(model, mermaid, warnings, int(run.get("attempts", 0)), True, out)
 
 
-def _chat(client: ChatClient, messages: list[Message], schema: dict[str, Any],
-          progress: Progress) -> str:
+def _chat(
+    client: ChatClient, messages: list[Message], schema: dict[str, Any], progress: Progress
+) -> str:
     try:
         return client.chat(messages, schema)
     except LLMTimeout:
@@ -94,9 +102,7 @@ def _chat(client: ChatClient, messages: list[Message], schema: dict[str, Any],
     try:
         return client.chat(messages, schema)
     except LLMTimeout as exc:
-        raise AnalysisError(
-            f"{exc} Try a smaller model or a lower context_budget_tokens."
-        ) from exc
+        raise AnalysisError(f"{exc} Try a smaller model or a lower context_budget_tokens.") from exc
 
 
 def _excluded_output(repo: Path, out: Path) -> tuple[str, ...]:
@@ -163,8 +169,7 @@ def analyze(
             break
         _write_atomic(debug_dir / f"attempt-{attempt}.txt", raw)
         report("validate", f"rejected with {len(result.errors)} problem(s)")
-        messages = [*messages, {"role": "assistant", "content": raw},
-                    retry_message(result.errors)]
+        messages = [*messages, {"role": "assistant", "content": raw}, retry_message(result.errors)]
     timings["llm"] = time.monotonic() - step_start
 
     if result is None or result.model is None:

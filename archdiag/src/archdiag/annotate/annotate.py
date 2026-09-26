@@ -102,13 +102,15 @@ def _clean_note(note: ComponentNote, allowed_edges: set[str]) -> tuple[Component
         warnings.append(f"ignored labels for unknown edges: {', '.join(unknown[:5])}")
     labels = {
         k: " ".join(v.split())[:MAX_EDGE_LABEL]
-        for k, v in note.edge_labels.items() if k in allowed_edges and v.strip()
+        for k, v in note.edge_labels.items()
+        if k in allowed_edges and v.strip()
     }
     return ComponentNote(
         label=" ".join(note.label.split())[:MAX_LABEL],
         description=" ".join(note.description.split())[:MAX_DESCRIPTION],
-        responsibilities=[" ".join(r.split())[:80] for r in note.responsibilities
-                          if r.strip()][:MAX_RESPONSIBILITIES],
+        responsibilities=[" ".join(r.split())[:80] for r in note.responsibilities if r.strip()][
+            :MAX_RESPONSIBILITIES
+        ],
         edge_labels=labels,
     ), warnings
 
@@ -126,9 +128,15 @@ def _excerpts(snapshot: RepoSnapshot, files: Sequence[str]) -> list[tuple[str, s
     return out
 
 
-def _component_prompt(node: NodeV2, files: Sequence[str], classes: Sequence[ClassInfo],
-                      outgoing: Sequence[EdgeV2], incoming: Sequence[EdgeV2],
-                      names: dict[str, str], snapshot: RepoSnapshot) -> str:
+def _component_prompt(
+    node: NodeV2,
+    files: Sequence[str],
+    classes: Sequence[ClassInfo],
+    outgoing: Sequence[EdgeV2],
+    incoming: Sequence[EdgeV2],
+    names: dict[str, str],
+    snapshot: RepoSnapshot,
+) -> str:
     lines = [
         f"Component id: {node.id}",
         f"Path(s): {', '.join(node.paths) or '(root files)'}",
@@ -138,44 +146,63 @@ def _component_prompt(node: NodeV2, files: Sequence[str], classes: Sequence[Clas
         "Key types:",
     ]
     ranked = sorted(classes, key=lambda c: (-c.references, c.name))[:MAX_SYMBOLS]
-    lines.extend(
-        f"- {c.name} ({'interface' if c.interface else c.kind})" for c in ranked
-    )
+    lines.extend(f"- {c.name} ({'interface' if c.interface else c.kind})" for c in ranked)
     if not ranked:
         lines.append("- (none found)")
     lines += ["", "Outgoing dependencies (edge id: target, kind, weight, examples):"]
     for edge in outgoing:
         samples = "; ".join(e.detail for e in edge.evidence[:3] if e.detail)
-        lines.append(f"- {edge.id}: {names.get(edge.target, edge.target)}, {edge.kind}, "
-                     f"{edge.weight}, {samples}")
+        lines.append(
+            f"- {edge.id}: {names.get(edge.target, edge.target)}, {edge.kind}, "
+            f"{edge.weight}, {samples}"
+        )
     if not outgoing:
         lines.append("- (none)")
-    lines += ["", "Used by: " + (", ".join(sorted({names.get(e.source, e.source)
-                                                    for e in incoming})) or "(nobody)")]
+    lines += [
+        "",
+        "Used by: "
+        + (", ".join(sorted({names.get(e.source, e.source) for e in incoming})) or "(nobody)"),
+    ]
     lines += ["", "Header excerpts:"]
     for path, text in _excerpts(snapshot, files):
         lines += [f"<<<FILE {path}>>>", text, "<<<END FILE>>>"]
     return "\n".join(lines)
 
 
-def _chat(client: ChatClient, messages: list[Message], schema: dict[str, Any], kind: type[BaseModel],
-          retries: int) -> tuple[Any, str | None]:
+def _chat(
+    client: ChatClient,
+    messages: list[Message],
+    schema: dict[str, Any],
+    kind: type[BaseModel],
+    retries: int,
+) -> tuple[Any, str | None]:
     error: str | None = None
     for _ in range(retries + 1):
         raw = client.chat(messages, schema)
         parsed, error = _parse(raw, kind)
         if parsed is not None:
             return parsed, None
-        messages = [*messages, {"role": "assistant", "content": raw},
-                    {"role": "user", "content": f"That was invalid ({error}). Return the "
-                                                "corrected JSON object only."}]
+        messages = [
+            *messages,
+            {"role": "assistant", "content": raw},
+            {
+                "role": "user",
+                "content": f"That was invalid ({error}). Return the corrected JSON object only.",
+            },
+        ]
     return None, error
 
 
-def annotate(model: ArchModelV2, component_files: dict[str, Sequence[str]],
-             classes: Sequence[ClassInfo], snapshot: RepoSnapshot, client: ChatClient,
-             store: FactStore, settings: Settings, progress: Progress | None = None
-             ) -> AnnotationResult:
+def annotate(
+    model: ArchModelV2,
+    component_files: dict[str, Sequence[str]],
+    classes: Sequence[ClassInfo],
+    snapshot: RepoSnapshot,
+    client: ChatClient,
+    store: FactStore,
+    settings: Settings,
+    progress: Progress | None = None,
+) -> AnnotationResult:
     def report(message: str) -> None:
         if progress:
             progress("annotate", message)
@@ -183,8 +210,9 @@ def annotate(model: ArchModelV2, component_files: dict[str, Sequence[str]],
     result = AnnotationResult(model.model_copy(deep=True))
     target = result.model
     names = {n.id: n.label for n in target.nodes}
-    components = [n for n in target.nodes
-                  if n.level == "component" and n.kind not in ("test", "unassigned")]
+    components = [
+        n for n in target.nodes if n.level == "component" and n.kind not in ("test", "unassigned")
+    ]
     by_component: dict[str, list[ClassInfo]] = {}
     for info in classes:
         by_component.setdefault(info.component, []).append(info)
@@ -193,15 +221,24 @@ def annotate(model: ArchModelV2, component_files: dict[str, Sequence[str]],
     cached = called = failed = 0
 
     for position, node in enumerate(components, start=1):
-        outgoing = [e for e in target.edges if e.source == node.id
-                    and e.kind in ("depends", "message", "uses")]
+        outgoing = [
+            e
+            for e in target.edges
+            if e.source == node.id and e.kind in ("depends", "message", "uses")
+        ]
         incoming = [e for e in target.edges if e.target == node.id and e.kind == "depends"]
         files = component_files.get(node.id, [])
-        key = hashlib.sha256(json.dumps([
-            ANNOTATION_VERSION, settings.model, settings.language,
-            [snapshot.hashes.get(f) for f in files],
-            [(e.id, e.weight) for e in outgoing],
-        ]).encode()).hexdigest()
+        key = hashlib.sha256(
+            json.dumps(
+                [
+                    ANNOTATION_VERSION,
+                    settings.model,
+                    settings.language,
+                    [snapshot.hashes.get(f) for f in files],
+                    [(e.id, e.weight) for e in outgoing],
+                ]
+            ).encode()
+        ).hexdigest()
         stored = store.get_annotation(key)
         note: ComponentNote | None = None
         if stored:
@@ -212,15 +249,17 @@ def annotate(model: ArchModelV2, component_files: dict[str, Sequence[str]],
                 note = None
         if note is None:
             report(f"component {position}/{len(components)}: {node.label}")
-            prompt = _component_prompt(node, files, by_component.get(node.id, []), outgoing,
-                                       incoming, names, snapshot)
+            prompt = _component_prompt(
+                node, files, by_component.get(node.id, []), outgoing, incoming, names, snapshot
+            )
             messages: list[Message] = [
                 {"role": "system", "content": MAP_SYSTEM.replace("{language}", settings.language)},
                 {"role": "user", "content": prompt},
             ]
             try:
-                parsed, error = _chat(client, messages, _schema(ComponentNote), ComponentNote,
-                                      MAP_RETRIES)
+                parsed, error = _chat(
+                    client, messages, _schema(ComponentNote), ComponentNote, MAP_RETRIES
+                )
             except LLMUnavailable:
                 raise
             except LLMError as exc:
@@ -228,8 +267,9 @@ def annotate(model: ArchModelV2, component_files: dict[str, Sequence[str]],
             called += 1
             if parsed is None:
                 failed += 1
-                result.warnings.append(f"Annotation of {node.id} failed ({error}); "
-                                       "kept the static label.")
+                result.warnings.append(
+                    f"Annotation of {node.id} failed ({error}); kept the static label."
+                )
                 continue
             note, note_warnings = _clean_note(parsed, {e.id for e in outgoing})
             result.warnings.extend(f"{node.id}: {w}" for w in note_warnings)
@@ -251,13 +291,24 @@ def annotate(model: ArchModelV2, component_files: dict[str, Sequence[str]],
 
     summary = {
         "components": [
-            {"id": n.id, "label": n.label, "layer": n.layer, "description": n.description,
-             "responsibilities": n.responsibilities}
-            for n in target.nodes if n.level == "component" and n.kind != "test"
+            {
+                "id": n.id,
+                "label": n.label,
+                "layer": n.layer,
+                "description": n.description,
+                "responsibilities": n.responsibilities,
+            }
+            for n in target.nodes
+            if n.level == "component" and n.kind != "test"
         ],
         "dependencies": [
-            {"from": names.get(e.source, e.source), "to": names.get(e.target, e.target),
-             "kind": e.kind, "weight": e.weight, "label": e.label}
+            {
+                "from": names.get(e.source, e.source),
+                "to": names.get(e.target, e.target),
+                "kind": e.kind,
+                "weight": e.weight,
+                "label": e.label,
+            }
             for e in sorted(target.edges, key=lambda e: -e.weight)
             if e.kind in ("depends", "message")
             and not e.source.startswith(("cls_", "lyr_", "tgt_", "sys_"))
@@ -265,9 +316,11 @@ def annotate(model: ArchModelV2, component_files: dict[str, Sequence[str]],
         "violations": [{"rule": v.rule, "message": v.message} for v in target.violations][:20],
         "messages": [m.name for m in target.messages][:30],
     }
-    reduce_key = hashlib.sha256(json.dumps(
-        [ANNOTATION_VERSION, settings.model, settings.language, summary], sort_keys=True
-    ).encode()).hexdigest()
+    reduce_key = hashlib.sha256(
+        json.dumps(
+            [ANNOTATION_VERSION, settings.model, settings.language, summary], sort_keys=True
+        ).encode()
+    ).hexdigest()
     stored = store.get_annotation(reduce_key)
     system: SystemNote | None = None
     if stored:
@@ -280,8 +333,11 @@ def annotate(model: ArchModelV2, component_files: dict[str, Sequence[str]],
         report("system overview")
         messages = [
             {"role": "system", "content": REDUCE_SYSTEM.replace("{language}", settings.language)},
-            {"role": "user", "content": f"System: {snapshot.name}\n\n"
-                                        + json.dumps(summary, indent=1, ensure_ascii=False)},
+            {
+                "role": "user",
+                "content": f"System: {snapshot.name}\n\n"
+                + json.dumps(summary, indent=1, ensure_ascii=False),
+            },
         ]
         try:
             parsed, error = _chat(client, messages, _schema(SystemNote), SystemNote, MAP_RETRIES)

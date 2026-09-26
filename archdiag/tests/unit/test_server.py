@@ -13,14 +13,22 @@ PORT = 8765
 BASE = f"http://127.0.0.1:{PORT}"
 
 
-def app_for(repo: Path, replies: list[str | Exception] | None = None,
-            mode: str = "llm") -> TestClient:
+def app_for(
+    repo: Path, replies: list[str | Exception] | None = None, mode: str = "llm"
+) -> TestClient:
     out = repo / ".archdiag"
     client = FakeClient(replies or [good_reply()])
 
     def runner(progress):  # type: ignore[no-untyped-def]
-        return run_analysis(repo, out, Settings(), client_factory=lambda: client, mode=mode,
-                            use_cache=False, progress=progress)
+        return run_analysis(
+            repo,
+            out,
+            Settings(),
+            client_factory=lambda: client,
+            mode=mode,
+            use_cache=False,
+            progress=progress,
+        )
 
     return TestClient(create_app(repo, out, runner, PORT), base_url=BASE)
 

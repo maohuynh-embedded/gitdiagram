@@ -12,12 +12,30 @@ GOOD_MODEL: dict[str, Any] = {
     "title": "Mini ECU",
     "groups": [{"id": "firmware", "label": "Firmware", "parent": None}],
     "nodes": [
-        {"id": "app", "label": "Application", "kind": "application", "group": "firmware",
-         "paths": ["src/app"], "description": "Main loop reading CAN and driving GPIO."},
-        {"id": "can_driver", "label": "CAN driver", "kind": "driver", "group": "firmware",
-         "paths": ["src/drivers/can"], "description": "Sends and receives CAN frames."},
-        {"id": "gpio_hal", "label": "GPIO HAL", "kind": "hal", "group": "firmware",
-         "paths": ["src/hal"], "description": "Sets output pins."},
+        {
+            "id": "app",
+            "label": "Application",
+            "kind": "application",
+            "group": "firmware",
+            "paths": ["src/app"],
+            "description": "Main loop reading CAN and driving GPIO.",
+        },
+        {
+            "id": "can_driver",
+            "label": "CAN driver",
+            "kind": "driver",
+            "group": "firmware",
+            "paths": ["src/drivers/can"],
+            "description": "Sends and receives CAN frames.",
+        },
+        {
+            "id": "gpio_hal",
+            "label": "GPIO HAL",
+            "kind": "hal",
+            "group": "firmware",
+            "paths": ["src/hal"],
+            "description": "Sets output pins.",
+        },
     ],
     "edges": [
         {"from": "app", "to": "can_driver", "label": "receives frames", "kind": "uses"},
@@ -34,8 +52,9 @@ def good_reply(**overrides: Any) -> str:
 
 
 class FakeClient:
-    def __init__(self, replies: Sequence[str | Exception] = (),
-                 models: dict[str, int] | None = None) -> None:
+    def __init__(
+        self, replies: Sequence[str | Exception] = (), models: dict[str, int] | None = None
+    ) -> None:
         self.replies = list(replies)
         self.calls: list[list[Message]] = []
         self.models = models if models is not None else {"qwen3-coder:30b": 19_000_000_000}

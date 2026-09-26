@@ -17,8 +17,12 @@ def render_explanation_v2(model: ArchModelV2) -> str:
         lines += ["_No written overview: this run used static analysis only (--no-llm)._", ""]
 
     components = [n for n in model.nodes if n.level == "component"]
-    lines += ["## Components", "", "| Component | Layer | Files | Lines | Paths | Description |",
-              "|---|---|---|---|---|---|"]
+    lines += [
+        "## Components",
+        "",
+        "| Component | Layer | Files | Lines | Paths | Description |",
+        "|---|---|---|---|---|---|",
+    ]
     for node in sorted(components, key=lambda n: (n.layer or "", n.label)):
         paths = ", ".join(f"`{p}`" for p in node.paths[:4])
         lines.append(
@@ -38,14 +42,20 @@ def render_explanation_v2(model: ArchModelV2) -> str:
         lines.append("")
 
     if model.messages:
-        lines += ["## Messages", "", "| Protocol | Name | Id | Senders | Receivers | Confidence |",
-                  "|---|---|---|---|---|---|"]
+        lines += [
+            "## Messages",
+            "",
+            "| Protocol | Name | Id | Senders | Receivers | Confidence |",
+            "|---|---|---|---|---|---|",
+        ]
         for message in model.messages[:200]:
             ident = f"0x{message.message_id:X}" if message.message_id is not None else ""
             senders = ", ".join(names.get(s, s) for s in message.senders)
             receivers = ", ".join(names.get(r, r) for r in message.receivers)
-            lines.append(f"| {message.protocol} | {_cell(message.name)} | {ident} | "
-                         f"{_cell(senders)} | {_cell(receivers)} | {message.confidence} |")
+            lines.append(
+                f"| {message.protocol} | {_cell(message.name)} | {ident} | "
+                f"{_cell(senders)} | {_cell(receivers)} | {message.confidence} |"
+            )
         lines.append("")
 
     lines += ["## Views", ""]

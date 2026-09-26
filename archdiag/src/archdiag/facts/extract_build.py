@@ -15,19 +15,43 @@ from fnmatch import fnmatchcase
 from archdiag.facts.model import BUILD, BUILD_TARGET, INCLUDE_DIR, Confidence, Fact
 
 _ROOT = "@ROOT@"
-_CMAKE_KEYWORDS = frozenset({
-    "WIN32", "MACOSX_BUNDLE", "EXCLUDE_FROM_ALL", "STATIC", "SHARED", "MODULE", "OBJECT",
-    "INTERFACE", "PRIVATE", "PUBLIC", "SYSTEM", "BEFORE", "AFTER", "MANUAL_FINALIZATION",
-    "CONFIGURE_DEPENDS", "LINK_PRIVATE", "LINK_PUBLIC", "LINK_INTERFACE_LIBRARIES",
-})
-_EXECUTABLE_COMMANDS = frozenset({
-    "add_executable", "qt_add_executable", "qt5_add_executable", "qt6_add_executable",
-})
+_CMAKE_KEYWORDS = frozenset(
+    {
+        "WIN32",
+        "MACOSX_BUNDLE",
+        "EXCLUDE_FROM_ALL",
+        "STATIC",
+        "SHARED",
+        "MODULE",
+        "OBJECT",
+        "INTERFACE",
+        "PRIVATE",
+        "PUBLIC",
+        "SYSTEM",
+        "BEFORE",
+        "AFTER",
+        "MANUAL_FINALIZATION",
+        "CONFIGURE_DEPENDS",
+        "LINK_PRIVATE",
+        "LINK_PUBLIC",
+        "LINK_INTERFACE_LIBRARIES",
+    }
+)
+_EXECUTABLE_COMMANDS = frozenset(
+    {
+        "add_executable",
+        "qt_add_executable",
+        "qt5_add_executable",
+        "qt6_add_executable",
+    }
+)
 _LIBRARY_COMMANDS = frozenset({"add_library", "qt_add_library", "qt6_add_library"})
 _VAR_REF = re.compile(r"\$\{([A-Za-z0-9_.+-]+)\}")
 _QMAKE_ASSIGN = re.compile(r"^([A-Za-z_][A-Za-z0-9_.]*)\s*(\+=|-=|\*=|=)\s*(.*)$")
 _QMAKE_VAR = re.compile(r"\$\$\{?([A-Za-z_][A-Za-z0-9_]*)\}?")
-_QMAKE_SCOPE_PREFIX = re.compile(r"^[!A-Za-z0-9_.|*-]+(?:\([^)]*\))?(?::[!A-Za-z0-9_.|*-]+)*\s*:\s*")
+_QMAKE_SCOPE_PREFIX = re.compile(
+    r"^[!A-Za-z0-9_.|*-]+(?:\([^)]*\))?(?::[!A-Za-z0-9_.|*-]+)*\s*:\s*"
+)
 
 
 @dataclass
@@ -44,7 +68,7 @@ class _Target:
 
 def _normalize(token: str, base: str) -> str | None:
     if token.startswith(f"{_ROOT}/"):
-        path = token[len(_ROOT) + 1:]
+        path = token[len(_ROOT) + 1 :]
     elif token == _ROOT:
         path = ""
     elif token.startswith("/"):
@@ -91,17 +115,24 @@ def _cmake_commands(text: str) -> Iterable[tuple[str, list[str], int]]:
             elif text[i] == ")":
                 depth -= 1
             i += 1
-        body = text[match.end():i - 1]
+        body = text[match.end() : i - 1]
         line = text.count("\n", 0, match.start()) + 1
-        args = [a[1:-1] if a.startswith('"') and a.endswith('"') and len(a) > 1 else a
-                for a in re.findall(r'"(?:[^"\\]|\\.)*"|[^\s"]+', body)]
+        args = [
+            a[1:-1] if a.startswith('"') and a.endswith('"') and len(a) > 1 else a
+            for a in re.findall(r'"(?:[^"\\]|\\.)*"|[^\s"]+', body)
+        ]
         yield match.group(1).lower(), args, line
         pos = i
 
 
 class _CMakeReader:
-    def __init__(self, files: Collection[str], targets: dict[str, _Target],
-                 global_dirs: set[str], warnings: list[str]) -> None:
+    def __init__(
+        self,
+        files: Collection[str],
+        targets: dict[str, _Target],
+        global_dirs: set[str],
+        warnings: list[str],
+    ) -> None:
         self.files = files
         self.targets = targets
         self.global_dirs = global_dirs
@@ -110,7 +141,8 @@ class _CMakeReader:
     def read(self, path: str, text: str) -> None:
         base = posixpath.dirname(path)
         variables: dict[str, list[str]] = {
-            "CMAKE_SOURCE_DIR": [_ROOT], "PROJECT_SOURCE_DIR": [_ROOT],
+            "CMAKE_SOURCE_DIR": [_ROOT],
+            "PROJECT_SOURCE_DIR": [_ROOT],
             "CMAKE_CURRENT_SOURCE_DIR": [f"{_ROOT}/{base}" if base else _ROOT],
             "CMAKE_CURRENT_LIST_DIR": [f"{_ROOT}/{base}" if base else _ROOT],
         }
@@ -138,7 +170,9 @@ class _CMakeReader:
         if whole:
             return list(variables.get(whole.group(1), [arg]))
         for _ in range(5):
-            replaced = _VAR_REF.sub(lambda m: " ".join(variables.get(m.group(1), [m.group(0)])), arg)
+            replaced = _VAR_REF.sub(
+                lambda m: " ".join(variables.get(m.group(1), [m.group(0)])), arg
+            )
             if replaced == arg:
                 break
             arg = replaced
@@ -154,15 +188,22 @@ class _CMakeReader:
                 out.append(normalized)
         return out
 
-    def apply(self, command: str, args: list[str], line: int, path: str, base: str,
-              variables: dict[str, list[str]]) -> None:
+    def apply(
+        self,
+        command: str,
+        args: list[str],
+        line: int,
+        path: str,
+        base: str,
+        variables: dict[str, list[str]],
+    ) -> None:
         if not args:
             return
         if command == "set":
             values = args[1:]
             for stop in ("CACHE", "PARENT_SCOPE"):
                 if stop in values:
-                    values = values[:values.index(stop)]
+                    values = values[: values.index(stop)]
             variables[args[0]] = values
         elif command == "list" and len(args) >= 2 and args[0] == "APPEND":
             variables.setdefault(args[1], []).extend(args[2:])
@@ -170,16 +211,15 @@ class _CMakeReader:
             patterns = [p for p in self.paths(args[2:], base) if p]
             recursive = args[0] == "GLOB_RECURSE"
             variables[args[1]] = [
-                f"{_ROOT}/{f}" for f in sorted(self.files)
+                f"{_ROOT}/{f}"
+                for f in sorted(self.files)
                 if any(self.glob_match(f, p, recursive) for p in patterns)
             ]
         elif command in _EXECUTABLE_COMMANDS or command in _LIBRARY_COMMANDS:
             if "IMPORTED" in args or "ALIAS" in args:
                 return
             kind = "executable" if command in _EXECUTABLE_COMMANDS else "library"
-            target = self.targets.setdefault(
-                args[0], _Target(args[0], kind, "cmake", path, line)
-            )
+            target = self.targets.setdefault(args[0], _Target(args[0], kind, "cmake", path, line))
             # include_directories() seeds every target created after it in this directory.
             target.include_dirs.update(self.directory_dirs)
             target.sources.update(p for p in self.paths(args[1:], base) if p in self.files)
@@ -202,16 +242,20 @@ class _CMakeReader:
             directory, name = posixpath.split(pattern)
             prefix = f"{directory}/" if directory else ""
             return path.startswith(prefix) and fnmatchcase(posixpath.basename(path), name)
-        return (fnmatchcase(path, pattern)
-                and path.count("/") == pattern.count("/"))
+        return fnmatchcase(path, pattern) and path.count("/") == pattern.count("/")
 
 
 # --- qmake ---------------------------------------------------------------------------------
 
 
 class _QmakeReader:
-    def __init__(self, files: Collection[str], read: Callable[[str], str],
-                 targets: dict[str, _Target], warnings: list[str]) -> None:
+    def __init__(
+        self,
+        files: Collection[str],
+        read: Callable[[str], str],
+        targets: dict[str, _Target],
+        warnings: list[str],
+    ) -> None:
         self.files = files
         self.read_text = read
         self.targets = targets
@@ -228,11 +272,13 @@ class _QmakeReader:
         target = _Target(name, "library" if template == "lib" else "executable", "qmake", path, 1)
         for key in ("SOURCES", "HEADERS"):
             target.sources.update(
-                p for p in (_normalize(v, base) for v in variables.get(key, []))
+                p
+                for p in (_normalize(v, base) for v in variables.get(key, []))
                 if p is not None and p in self.files
             )
         target.include_dirs.update(
-            p for p in (_normalize(v, base) for v in variables.get("INCLUDEPATH", []))
+            p
+            for p in (_normalize(v, base) for v in variables.get("INCLUDEPATH", []))
             if p is not None
         )
         target.links.update(v[2:] for v in variables.get("LIBS", []) if v.startswith("-l"))
@@ -267,7 +313,8 @@ class _QmakeReader:
                 continue
             name, op, value = assign.groups()
             values = [
-                v for v in (self.substitute(tok, variables, root_relative) for tok in value.split())
+                v
+                for v in (self.substitute(tok, variables, root_relative) for tok in value.split())
                 if v
             ]
             if op == "=":
@@ -311,11 +358,21 @@ def extract_build(
         except (ValueError, RecursionError) as exc:
             warnings.append(f"{path}: could not be parsed ({exc})")
     facts = [
-        Fact(BUILD_TARGET, t.file, t.line, BUILD, Confidence.HIGH, {
-            "name": t.name, "kind": t.kind, "system": t.system,
-            "sources": sorted(t.sources), "include_dirs": sorted(t.include_dirs),
-            "links": sorted(t.links),
-        })
+        Fact(
+            BUILD_TARGET,
+            t.file,
+            t.line,
+            BUILD,
+            Confidence.HIGH,
+            {
+                "name": t.name,
+                "kind": t.kind,
+                "system": t.system,
+                "sources": sorted(t.sources),
+                "include_dirs": sorted(t.include_dirs),
+                "links": sorted(t.links),
+            },
+        )
         for t in sorted(targets.values(), key=lambda t: t.name)
     ]
     facts.extend(

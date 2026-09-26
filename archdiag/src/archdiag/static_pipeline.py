@@ -84,8 +84,9 @@ def analyze_static(
     store = FactStore(out / FACTS_FILE)
     try:
         step = time.monotonic()
-        facts = collect_facts(snapshot, protocols, store, compile_db=compile_db,
-                              rebuild=rebuild, progress=report)
+        facts = collect_facts(
+            snapshot, protocols, store, compile_db=compile_db, rebuild=rebuild, progress=report
+        )
         timings["facts"] = time.monotonic() - step
 
         step = time.monotonic()
@@ -101,13 +102,21 @@ def analyze_static(
         views = build_views(components, agg, snapshot.name)
         violations = check_rules(components, views.edges, architecture)
         model = ArchModelV2(
-            title=snapshot.name, mode="static", groups=agg.groups, nodes=views.nodes,
-            edges=views.edges, messages=agg.messages, violations=violations,
+            title=snapshot.name,
+            mode="static",
+            groups=agg.groups,
+            nodes=views.nodes,
+            edges=views.edges,
+            messages=agg.messages,
+            violations=violations,
             views=views.views,
         )
         timings["model"] = time.monotonic() - step
-        report("model", f"{len(components)} components, {len(model.edges)} edges, "
-                        f"{len(violations)} violation(s), {len(model.views)} views")
+        report(
+            "model",
+            f"{len(components)} components, {len(model.edges)} edges, "
+            f"{len(violations)} violation(s), {len(model.views)} views",
+        )
 
         warnings = list(facts.warnings)
         annotation_stats: dict[str, int] = {}
@@ -116,8 +125,14 @@ def analyze_static(
             step = time.monotonic()
             try:
                 annotated = annotate(
-                    model, {c.id: c.files for c in components}, list(agg.classes.values()),
-                    snapshot, client, store, settings, report,
+                    model,
+                    {c.id: c.files for c in components},
+                    list(agg.classes.values()),
+                    snapshot,
+                    client,
+                    store,
+                    settings,
+                    report,
                 )
             except LLMError as exc:
                 warnings.append(f"No annotation: {exc} The diagrams use static labels.")

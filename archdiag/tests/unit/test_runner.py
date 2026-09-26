@@ -15,15 +15,20 @@ PROTOCOLS = load_protocol_config(None)
 
 
 def canonical(facts: list[Fact]) -> list[str]:
-    return sorted(json.dumps([f.kind, f.file, f.line, f.source, int(f.confidence), f.data],
-                             sort_keys=True) for f in facts)
+    return sorted(
+        json.dumps([f.kind, f.file, f.line, f.source, int(f.confidence), f.data], sort_keys=True)
+        for f in facts
+    )
 
 
 def test_mini_repo_facts_and_include_resolution(mini_repo: Path, tmp_path: Path) -> None:
     store = FactStore(tmp_path / "facts.db")
     result = collect_facts(build_snapshot(mini_repo), PROTOCOLS, store)
-    includes = {(f.file, f.data["spelled"]): f.data.get("target") or f.data.get("external")
-                for f in result.facts if f.kind == INCLUDE}
+    includes = {
+        (f.file, f.data["spelled"]): f.data.get("target") or f.data.get("external")
+        for f in result.facts
+        if f.kind == INCLUDE
+    }
     assert includes[("src/app/main.c", "can_driver.h")] == "src/drivers/can/can_driver.h"
     assert includes[("src/app/main.c", "gpio.h")] == "src/hal/gpio.h"
     assert includes[("src/drivers/can/can_driver.h", "stdint.h")] == "C/C++ standard library"
@@ -59,33 +64,52 @@ def test_parallel_extraction_matches_serial(
     repo = make_tree(tmp_path / "repo", files)
     monkeypatch.setattr("archdiag.facts.runner._PARALLEL_THRESHOLD", 10)
     serial = collect_facts(build_snapshot(repo), PROTOCOLS, FactStore(tmp_path / "a.db"), workers=1)
-    parallel = collect_facts(build_snapshot(repo), PROTOCOLS, FactStore(tmp_path / "b.db"),
-                             workers=4)
+    parallel = collect_facts(
+        build_snapshot(repo), PROTOCOLS, FactStore(tmp_path / "b.db"), workers=4
+    )
     assert canonical(serial.facts) == canonical(parallel.facts)
 
 
 def test_missing_explicit_compile_db_is_a_warning(mini_repo: Path, tmp_path: Path) -> None:
-    result = collect_facts(build_snapshot(mini_repo), PROTOCOLS, FactStore(tmp_path / "f.db"),
-                           compile_db=tmp_path / "nope.json")
+    result = collect_facts(
+        build_snapshot(mini_repo),
+        PROTOCOLS,
+        FactStore(tmp_path / "f.db"),
+        compile_db=tmp_path / "nope.json",
+    )
     assert any("not found" in w for w in result.warnings)
 
 
 CPP_FILES: dict[str, str | bytes] = {
     "include/port.h": "#pragma once\nclass Port { public: virtual ~Port(); "
-                      "virtual void send(int id) = 0; };\n",
+    "virtual void send(int id) = 0; };\n",
     "src/impl.h": '#pragma once\n#include "port.h"\n#ifdef NEVER\n#include "ghost.h"\n#endif\n'
-                  "class Impl : public Port { public: void send(int id) override; };\n",
+    "class Impl : public Port { public: void send(int id) override; };\n",
     "src/impl.cpp": '#include "impl.h"\nvoid Impl::send(int id) { (void)id; }\n',
 }
 
 
 def write_compile_db(repo: Path) -> None:
     (repo / "build").mkdir()
-    (repo / "build" / "compile_commands.json").write_text(json.dumps([{
-        "directory": str(repo),
-        "arguments": ["c++", "-std=c++17", "-Iinclude", "-c", "src/impl.cpp", "-o", "impl.o"],
-        "file": "src/impl.cpp",
-    }]))
+    (repo / "build" / "compile_commands.json").write_text(
+        json.dumps(
+            [
+                {
+                    "directory": str(repo),
+                    "arguments": [
+                        "c++",
+                        "-std=c++17",
+                        "-Iinclude",
+                        "-c",
+                        "src/impl.cpp",
+                        "-o",
+                        "impl.o",
+                    ],
+                    "file": "src/impl.cpp",
+                }
+            ]
+        )
+    )
 
 
 def test_compile_db_discovery_and_loading(tmp_path: Path, make_tree: MakeTree) -> None:

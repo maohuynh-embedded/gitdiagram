@@ -14,10 +14,22 @@ def model_dict(**overrides: Any) -> dict[str, Any]:
         "title": "Mini",
         "groups": [{"id": "firmware", "label": "Firmware", "parent": None}],
         "nodes": [
-            {"id": "app", "label": "App", "kind": "application", "group": "firmware",
-             "paths": ["src/app"], "description": "Main loop"},
-            {"id": "gpio", "label": "GPIO", "kind": "hal", "group": "firmware",
-             "paths": ["src/hal/gpio.c"], "description": "Pins"},
+            {
+                "id": "app",
+                "label": "App",
+                "kind": "application",
+                "group": "firmware",
+                "paths": ["src/app"],
+                "description": "Main loop",
+            },
+            {
+                "id": "gpio",
+                "label": "GPIO",
+                "kind": "hal",
+                "group": "firmware",
+                "paths": ["src/hal/gpio.c"],
+                "description": "Pins",
+            },
         ],
         "edges": [{"from": "app", "to": "gpio", "label": "drives", "kind": "uses"}],
         "explanation": "App drives GPIO.",
@@ -65,8 +77,10 @@ def test_schema_errors_carry_location() -> None:
         (lambda d: d["nodes"][0].update(group="missing"), "unknown group 'missing'"),
         (lambda d: d["edges"].append({"from": "app", "to": "ghost"}), "unknown node 'ghost'"),
         (lambda d: d["edges"].append({"from": "app", "to": "app"}), "points to itself"),
-        (lambda d: d["groups"].append({"id": "firmware2", "label": "X", "parent": "nowhere"}),
-         "unknown parent 'nowhere'"),
+        (
+            lambda d: d["groups"].append({"id": "firmware2", "label": "X", "parent": "nowhere"}),
+            "unknown parent 'nowhere'",
+        ),
         (lambda d: d["nodes"][0].update(label="  "), "empty label"),
     ],
 )
@@ -83,9 +97,23 @@ def test_group_parent_cycle_is_reported() -> None:
         {"id": "a", "label": "A", "parent": "b"},
         {"id": "b", "label": "B", "parent": "a"},
     ]
-    result = validate_raw(raw(groups=groups, nodes=[
-        {"id": "app", "label": "App", "kind": "x", "group": "a", "paths": [], "description": ""},
-    ], edges=[]), KNOWN)
+    result = validate_raw(
+        raw(
+            groups=groups,
+            nodes=[
+                {
+                    "id": "app",
+                    "label": "App",
+                    "kind": "x",
+                    "group": "a",
+                    "paths": [],
+                    "description": "",
+                },
+            ],
+            edges=[],
+        ),
+        KNOWN,
+    )
     assert any("cycle" in error for error in result.errors)
 
 

@@ -12,8 +12,14 @@ def test_small_repo_fits_without_truncation(mini_repo: Path) -> None:
     paths = [excerpt.path for excerpt in evidence.excerpts]
     assert paths[:3] == ["README.md", "CMakeLists.txt", "src/app/main.c"]
     assert set(paths) == {
-        "README.md", "CMakeLists.txt", "src/app/main.c", "src/drivers/can/can_driver.h",
-        "src/drivers/can/can_driver.c", "src/hal/gpio.h", "src/hal/gpio.c", "tests/test_gpio.c",
+        "README.md",
+        "CMakeLists.txt",
+        "src/app/main.c",
+        "src/drivers/can/can_driver.h",
+        "src/drivers/can/can_driver.c",
+        "src/hal/gpio.h",
+        "src/hal/gpio.c",
+        "tests/test_gpio.c",
     }
     assert evidence.candidates_total == len(paths)
     assert "build" not in evidence.tree_summary

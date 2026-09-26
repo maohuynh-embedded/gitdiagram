@@ -112,21 +112,46 @@ class ArchModelV2(_Base):
 
 def upgrade_v1(model: ArchModel) -> ArchModelV2:
     nodes = [
-        NodeV2(id=n.id, label=n.label, kind=n.kind, group=n.group, paths=n.paths,
-               description=n.description, origin="llm")
+        NodeV2(
+            id=n.id,
+            label=n.label,
+            kind=n.kind,
+            group=n.group,
+            paths=n.paths,
+            description=n.description,
+            origin="llm",
+        )
         for n in model.nodes
     ]
     edges = [
-        EdgeV2.model_validate({
-            "id": f"e{index}", "from": e.source, "to": e.target, "label": e.label,
-            "kind": e.kind, "confidence": "low",
-        })
+        EdgeV2.model_validate(
+            {
+                "id": f"e{index}",
+                "from": e.source,
+                "to": e.target,
+                "label": e.label,
+                "kind": e.kind,
+                "confidence": "low",
+            }
+        )
         for index, e in enumerate(model.edges)
     ]
-    view = View(id="overview", title="Overview", level="component",
-                node_ids=[n.id for n in nodes], edge_ids=[e.id for e in edges])
-    return ArchModelV2(title=model.title, mode="llm", groups=model.groups, nodes=nodes,
-                       edges=edges, views=[view], explanation=model.explanation)
+    view = View(
+        id="overview",
+        title="Overview",
+        level="component",
+        node_ids=[n.id for n in nodes],
+        edge_ids=[e.id for e in edges],
+    )
+    return ArchModelV2(
+        title=model.title,
+        mode="llm",
+        groups=model.groups,
+        nodes=nodes,
+        edges=edges,
+        views=[view],
+        explanation=model.explanation,
+    )
 
 
 def load_model(text: str) -> ArchModelV2:

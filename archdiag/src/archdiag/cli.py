@@ -28,17 +28,30 @@ def _add_llm_options(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--endpoint", help="LLM runtime URL (default http://127.0.0.1:11434)")
     parser.add_argument("--api", choices=["ollama", "openai"], help="LLM API flavour")
     parser.add_argument("--language", help="language of the written explanation")
-    parser.add_argument("--allow-remote-llm", action="store_true",
-                        help="allow an LLM endpoint that is not on this machine")
+    parser.add_argument(
+        "--allow-remote-llm",
+        action="store_true",
+        help="allow an LLM endpoint that is not on this machine",
+    )
 
 
 def _add_analysis_options(parser: argparse.ArgumentParser) -> None:
-    parser.add_argument("--mode", choices=MODES, default="auto",
-                        help="static analysis, LLM only, or auto (static when there is C/C++)")
-    parser.add_argument("--no-llm", action="store_true",
-                        help="static analysis without annotation; never calls a model")
-    parser.add_argument("--compile-db", type=Path,
-                        help="compile_commands.json for libclang (found automatically otherwise)")
+    parser.add_argument(
+        "--mode",
+        choices=MODES,
+        default="auto",
+        help="static analysis, LLM only, or auto (static when there is C/C++)",
+    )
+    parser.add_argument(
+        "--no-llm",
+        action="store_true",
+        help="static analysis without annotation; never calls a model",
+    )
+    parser.add_argument(
+        "--compile-db",
+        type=Path,
+        help="compile_commands.json for libclang (found automatically otherwise)",
+    )
     parser.add_argument("--rebuild-facts", action="store_true", help="drop the facts cache")
 
 
@@ -80,15 +93,20 @@ def _parser() -> argparse.ArgumentParser:
     _add_analysis_options(bench_cmd)
     bench_cmd.add_argument("--expected", type=Path, required=True)
     bench_cmd.add_argument("--no-cache", action="store_true")
-    bench_cmd.add_argument("--compare", action="store_true",
-                           help="run the LLM-only and the static path and compare them")
+    bench_cmd.add_argument(
+        "--compare",
+        action="store_true",
+        help="run the LLM-only and the static path and compare them",
+    )
     return parser
 
 
 def _settings(args: argparse.Namespace, repo: Path | None) -> Settings:
     overrides = {
-        "model": getattr(args, "model", None), "endpoint": getattr(args, "endpoint", None),
-        "api": getattr(args, "api", None), "language": getattr(args, "language", None),
+        "model": getattr(args, "model", None),
+        "endpoint": getattr(args, "endpoint", None),
+        "api": getattr(args, "api", None),
+        "language": getattr(args, "language", None),
     }
     settings = load_settings(repo, overrides, user_config=USER_CONFIG)
     if not is_loopback(settings.endpoint) and not getattr(args, "allow_remote_llm", False):
@@ -111,26 +129,38 @@ def _progress(step: str, message: str) -> None:
     print(f"[{step}] {message}", file=sys.stderr, flush=True)
 
 
-def _client_factory(args: argparse.Namespace, settings: Settings
-                    ) -> Callable[[], ChatClient] | None:
+def _client_factory(
+    args: argparse.Namespace, settings: Settings
+) -> Callable[[], ChatClient] | None:
     if getattr(args, "no_llm", False):
         return None
     return lambda: make_client(settings)
 
 
-def _run(args: argparse.Namespace, repo: Path, out: Path, settings: Settings,
-         mode: str | None = None, use_cache: bool = True) -> RunOutcome:
+def _run(
+    args: argparse.Namespace,
+    repo: Path,
+    out: Path,
+    settings: Settings,
+    mode: str | None = None,
+    use_cache: bool = True,
+) -> RunOutcome:
     return run_analysis(
-        repo, out, settings, client_factory=_client_factory(args, settings),
-        mode=mode or getattr(args, "mode", "auto"), compile_db=getattr(args, "compile_db", None),
-        rebuild=getattr(args, "rebuild_facts", False), use_cache=use_cache, progress=_progress,
+        repo,
+        out,
+        settings,
+        client_factory=_client_factory(args, settings),
+        mode=mode or str(getattr(args, "mode", "auto")),
+        compile_db=getattr(args, "compile_db", None),
+        rebuild=getattr(args, "rebuild_facts", False),
+        use_cache=use_cache,
+        progress=_progress,
     )
 
 
 def _summarise(outcome: RunOutcome) -> None:
     model = outcome.model
-    print(f"{outcome.mode}: {len(model.nodes)} nodes, {len(model.edges)} edges "
-          f"({outcome.detail})")
+    print(f"{outcome.mode}: {len(model.nodes)} nodes, {len(model.edges)} edges ({outcome.detail})")
     for warning in outcome.warnings:
         print(f"warning: {warning}")
     print(f"written to {outcome.out_dir}")
@@ -152,8 +182,10 @@ def _cmd_check(args: argparse.Namespace) -> int:
     for violation in outcome.model.violations:
         where = ", ".join(f"{e.file}:{e.line}" for e in violation.evidence[:3])
         target = f" -> {names.get(violation.target, violation.target)}" if violation.target else ""
-        print(f"{violation.rule}: {names.get(violation.source, violation.source)}{target}: "
-              f"{violation.message} [{where}]")
+        print(
+            f"{violation.rule}: {names.get(violation.source, violation.source)}{target}: "
+            f"{violation.message} [{where}]"
+        )
     count = len(outcome.model.violations)
     print(f"{count} violation(s)")
     return EXIT_VIOLATIONS if count else EXIT_OK
@@ -167,8 +199,15 @@ def _cmd_serve(args: argparse.Namespace) -> int:
 
     def runner(progress: Callable[[str, str], None]) -> RunOutcome:
         return run_analysis(
-            repo, out, settings, client_factory=_client_factory(args, settings), mode=args.mode,
-            compile_db=args.compile_db, rebuild=False, use_cache=False, progress=progress,
+            repo,
+            out,
+            settings,
+            client_factory=_client_factory(args, settings),
+            mode=args.mode,
+            compile_db=args.compile_db,
+            rebuild=False,
+            use_cache=False,
+            progress=progress,
         )
 
     serve(repo, out, runner, args.port)
@@ -208,16 +247,27 @@ def _cmd_doctor(args: argparse.Namespace) -> int:
         setup = clang_setup()
     except ImportError:
         setup = None
-    print("libclang: " + ("available" + (f" ({setup.library})" if setup and setup.library else "")
-                          if setup else "not installed (optional: pip install 'archdiag[clang]')"))
+    print(
+        "libclang: "
+        + (
+            "available" + (f" ({setup.library})" if setup and setup.library else "")
+            if setup
+            else "not installed (optional: pip install 'archdiag[clang]')"
+        )
+    )
     return EXIT_OK
 
 
-def _score(outcome: RunOutcome, args: argparse.Namespace, repo: Path, settings: Settings
-           ) -> BenchReport:
+def _score(
+    outcome: RunOutcome, args: argparse.Namespace, repo: Path, settings: Settings
+) -> BenchReport:
     snapshot = build_snapshot(repo, settings.include, settings.exclude)
-    return score(outcome.model, load_expected(args.expected), snapshot.known_paths(),
-                 [f.path for f in snapshot.files])
+    return score(
+        outcome.model,
+        load_expected(args.expected),
+        snapshot.known_paths(),
+        [f.path for f in snapshot.files],
+    )
 
 
 def _cmd_bench(args: argparse.Namespace) -> int:
@@ -234,16 +284,24 @@ def _cmd_bench(args: argparse.Namespace) -> int:
     for mode in ("llm", "static"):
         outcome = _run(args, repo, out / mode, settings, mode=mode, use_cache=not args.no_cache)
         reports[mode] = _score(outcome, args, repo, settings)
-        (out / mode / "bench.json").write_text(json.dumps(reports[mode].to_dict(), indent=2),
-                                               encoding="utf-8")
-    rows = [("component recall", "component_recall"), ("relation recall", "relation_recall"),
-            ("path validity", "path_validity")]
+        (out / mode / "bench.json").write_text(
+            json.dumps(reports[mode].to_dict(), indent=2), encoding="utf-8"
+        )
+    rows = [
+        ("component recall", "component_recall"),
+        ("relation recall", "relation_recall"),
+        ("path validity", "path_validity"),
+    ]
     print(f"{'':18}{'llm':>10}{'static':>10}")
     for label, attr in rows:
-        print(f"{label:18}{getattr(reports['llm'], attr):>10.1%}"
-              f"{getattr(reports['static'], attr):>10.1%}")
-    print(f"{'junk nodes':18}{len(reports['llm'].junk_nodes):>10}"
-          f"{len(reports['static'].junk_nodes):>10}")
+        print(
+            f"{label:18}{getattr(reports['llm'], attr):>10.1%}"
+            f"{getattr(reports['static'], attr):>10.1%}"
+        )
+    print(
+        f"{'junk nodes':18}{len(reports['llm'].junk_nodes):>10}"
+        f"{len(reports['static'].junk_nodes):>10}"
+    )
     return EXIT_OK
 
 
