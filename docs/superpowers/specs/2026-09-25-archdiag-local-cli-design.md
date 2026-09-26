@@ -75,7 +75,7 @@ archdiag/
     bench.py                   # so với file đáp án
     web/
       server.py                # FastAPI, chỉ lắng nghe 127.0.0.1
-      static/                  # index.html, app.js, vendor/{mermaid, elk, dompurify}
+      static/                  # index.html, app.js, vendor/{mermaid, dompurify}
   tests/
     unit/ pipeline/ live/
     fixtures/mini-repo/        # repo C/C++ nhỏ, tự tạo cho test
@@ -120,7 +120,7 @@ Mỗi bước là một hàm thuần (dữ liệu vào, dữ liệu ra), test đ
 
 ## 4. LLM local
 
-- Mặc định `endpoint = "http://127.0.0.1:11434/v1"` và `model = "qwen3-coder:30b"`, khoảng 19 GB ở Q4_K_M. Cả hai đều cấu hình được. Khi bắt đầu làm sẽ kiểm tra lại model đang có trên Ollama.
+- Mặc định `api = "ollama"` (API riêng `/api/chat`, vì chỉ API này nhận `options.num_ctx`; không có nó Ollama âm thầm cắt prompt về context mặc định nhỏ), `endpoint = "http://127.0.0.1:11434"` và `model = "qwen3-coder:30b"`. Máy chủ tương thích OpenAI (LM Studio, llama.cpp) dùng `api = "openai"` với endpoint `…/v1`, khoảng 19 GB ở Q4_K_M. Cả hai đều cấu hình được. Khi bắt đầu làm sẽ kiểm tra lại model đang có trên Ollama.
 - Context thực dùng mặc định **32K token**. `num_ctx` gửi qua tùy chọn của Ollama.
 - **Structured output:** truyền JSON Schema của `ArchModel` qua tham số `format` của Ollama. Với runtime không hỗ trợ, dùng `response_format` kiểu `json_schema`, rồi đến chế độ JSON thường.
 - **Thử lại:**
@@ -165,12 +165,12 @@ archdiag bench   <repo> --expected FILE [--out DIR]
   - bấm node để mở menu: mở trong VS Code (`vscode://file/<abs path>`) hoặc xem nhanh
   - xuất PNG, SVG, copy Mermaid
   - sáng/tối theo `prefers-color-scheme`
-- **Vendor JS:** mermaid, @mermaid-js/layout-elk và DOMPurify được đóng gói vào `static/vendor/`, phiên bản ghim cố định. Không tải từ CDN.
+- **Vendor JS:** mermaid và DOMPurify được đóng gói vào `static/vendor/`, phiên bản ghim cố định. Không tải từ CDN. A dùng bố cục có sẵn của Mermaid (đủ cho ≤ 60 node); ELK được xem xét lại ở C.
 - **Bảo mật render:**
   - Compiler escape toàn bộ text.
   - Mermaid chạy với `securityLevel: "antiscript"` và `htmlLabels: false`.
   - SVG được lọc qua DOMPurify.
-  - Sau khi lọc, chỉ giữ link dạng `vscode://file/` trỏ tới path nằm trong repo. Các link khác bị xoá.
+  - Mermaid sinh ra **không có** chỉ thị `click` hay `href`. Sau khi lọc, mọi thẻ `<a>` trong SVG bị gỡ. Web tự gắn sự kiện bấm node, và link `vscode://file/` chỉ được dựng từ path đã qua kiểm tra trong `model.json`.
 
 ## 7. Xử lý lỗi
 
