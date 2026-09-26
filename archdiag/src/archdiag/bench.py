@@ -75,11 +75,11 @@ def load_expected(path: Path) -> Expected:
     return Expected(tuple(components), tuple(relations), forbidden)
 
 
-def _matches(spec: pathspec.PathSpec, path: str) -> bool:
+def _matches(spec: pathspec.GitIgnoreSpec, path: str) -> bool:
     return spec.match_file(path) or spec.match_file(f"{path}/{_DIR_PROBE}")
 
 
-def _node_components(node: Node, specs: dict[str, pathspec.PathSpec]) -> set[str]:
+def _node_components(node: Node, specs: dict[str, pathspec.GitIgnoreSpec]) -> set[str]:
     paths = [normalize_path(p) for p in node.paths]
     return {name for name, spec in specs.items() if any(_matches(spec, p) for p in paths)}
 
@@ -92,7 +92,8 @@ def score(model: ArchModel, expected: Expected, known_paths: frozenset[str]) -> 
     found = sorted({name for names in by_node.values() for name in names})
     missing = [c.name for c in expected.components if c.name not in found]
 
-    found_relations, missing_relations = [], []
+    found_relations: list[tuple[str, str]] = []
+    missing_relations: list[tuple[str, str]] = []
     for source, target in expected.relations:
         hit = any(
             source in by_node.get(edge.source, set()) and target in by_node.get(edge.target, set())

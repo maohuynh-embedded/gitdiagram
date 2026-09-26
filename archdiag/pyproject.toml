@@ -33,6 +33,7 @@ archdiag = ["web/static/*", "web/static/vendor/*"]
 testpaths = ["tests"]
 markers = ["live: needs a running local LLM (deselected by default)"]
 addopts = "-m 'not live'"
+filterwarnings = ["ignore:Using `httpx` with `starlette.testclient`"]
 
 [tool.ruff]
 line-length = 100

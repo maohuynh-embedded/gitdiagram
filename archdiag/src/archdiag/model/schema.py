@@ -7,7 +7,7 @@ from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field
 
-SCHEMA_VERSION = 1
+SCHEMA_VERSION: Literal[1] = 1
 MAX_NODES = 60
 MAX_EDGES = 120
 MAX_GROUPS = 20

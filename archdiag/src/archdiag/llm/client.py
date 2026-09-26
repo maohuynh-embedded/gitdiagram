@@ -43,7 +43,11 @@ class _HttpClient:
         )
 
     def _request(
-        self, method: str, path: str, body: dict[str, Any] | None = None, timeout: float | None = None
+        self,
+        method: str,
+        path: str,
+        body: dict[str, Any] | None = None,
+        timeout: float | None = None,
     ) -> dict[str, Any]:
         endpoint = self.settings.endpoint
         try:

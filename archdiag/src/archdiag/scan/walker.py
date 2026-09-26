@@ -72,7 +72,9 @@ def _is_binary(path: Path) -> bool:
         return b"\0" in fh.read(_SNIFF_BYTES)
 
 
-def _build_spec(root: Path, include: Sequence[str], exclude: Sequence[str]) -> pathspec.PathSpec:
+def _build_spec(
+    root: Path, include: Sequence[str], exclude: Sequence[str]
+) -> pathspec.GitIgnoreSpec:
     lines = [*DEFAULT_EXCLUDES, *exclude]
     gitignore = root / ".gitignore"
     if gitignore.is_file():
