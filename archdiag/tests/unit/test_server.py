@@ -5,6 +5,7 @@ from fastapi.testclient import TestClient
 
 from archdiag.config import Settings
 from archdiag.pipeline import analyze
+from archdiag.run import run_analysis
 from archdiag.web.server import create_app
 from tests.fakes import FakeClient, good_reply
 
@@ -12,10 +13,16 @@ PORT = 8765
 BASE = f"http://127.0.0.1:{PORT}"
 
 
-def app_for(repo: Path, replies: list[str | Exception] | None = None) -> TestClient:
+def app_for(repo: Path, replies: list[str | Exception] | None = None,
+            mode: str = "llm") -> TestClient:
     out = repo / ".archdiag"
-    app = create_app(repo, out, Settings(), lambda: FakeClient(replies or [good_reply()]), PORT)
-    return TestClient(app, base_url=BASE)
+    client = FakeClient(replies or [good_reply()])
+
+    def runner(progress):  # type: ignore[no-untyped-def]
+        return run_analysis(repo, out, Settings(), client_factory=lambda: client, mode=mode,
+                            use_cache=False, progress=progress)
+
+    return TestClient(create_app(repo, out, runner, PORT), base_url=BASE)
 
 
 @pytest.fixture
@@ -77,7 +84,7 @@ def test_file_preview_missing_binary_and_large(analysed: Path) -> None:
 
 def test_wrong_host_is_rejected(analysed: Path) -> None:
     out = analysed / ".archdiag"
-    app = create_app(analysed, out, Settings(), FakeClient, PORT)
+    app = create_app(analysed, out, lambda progress: None, PORT)  # type: ignore[arg-type,return-value]
     client = TestClient(app, base_url=f"http://evil.example:{PORT}")
     assert client.get("/api/model").status_code == 400
 
@@ -113,3 +120,24 @@ def test_index_has_security_headers(analysed: Path) -> None:
     assert "script-src 'self'" in csp
     assert "unsafe-eval" not in csp
     assert response.headers["x-content-type-options"] == "nosniff"
+
+
+def test_views_and_view_diagrams(mini_repo: Path) -> None:
+    run_analysis(mini_repo, mini_repo / ".archdiag", Settings(), client_factory=None)
+    client = app_for(mini_repo)
+    views = client.get("/api/views").json()
+    assert [v["id"] for v in views] == ["system", "dependencies", "interfaces"]
+    system = client.get("/api/diagram", params={"view": "system"})
+    assert system.status_code == 200
+    assert "flowchart LR" in system.text
+    for bad in ("../model", "x/../../y", "nope"):
+        assert client.get("/api/diagram", params={"view": bad}).status_code in (400, 404)
+    model = client.get("/api/model").json()["model"]
+    assert model["schema_version"] == 2
+
+
+def test_static_reanalysis_over_sse(mini_repo: Path) -> None:
+    client = app_for(mini_repo, ["{}"] * 20, mode="static")
+    response = client.post("/api/analyze", headers={"Origin": BASE})
+    assert "event: done" in response.text
+    assert '"mode": "static"' in response.text

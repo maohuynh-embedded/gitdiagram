@@ -23,7 +23,7 @@ from archdiag.facts.model import BUILD_TARGET
 from archdiag.facts.protocol_config import load_protocol_config
 from archdiag.facts.runner import collect_facts
 from archdiag.facts.store import FactStore
-from archdiag.llm.client import ChatClient
+from archdiag.llm.client import ChatClient, LLMError
 from archdiag.model.schema_v2 import ArchModelV2
 from archdiag.pipeline import (
     DIAGRAM_FILE,
@@ -111,15 +111,21 @@ def analyze_static(
 
         warnings = list(facts.warnings)
         annotation_stats: dict[str, int] = {}
+        annotated_ok = False
         if client is not None:
             step = time.monotonic()
-            annotated = annotate(
-                model, {c.id: c.files for c in components}, list(agg.classes.values()),
-                snapshot, client, store, settings, report,
-            )
-            model = annotated.model
-            warnings.extend(annotated.warnings)
-            annotation_stats = annotated.stats
+            try:
+                annotated = annotate(
+                    model, {c.id: c.files for c in components}, list(agg.classes.values()),
+                    snapshot, client, store, settings, report,
+                )
+            except LLMError as exc:
+                warnings.append(f"No annotation: {exc} The diagrams use static labels.")
+            else:
+                model = annotated.model
+                warnings.extend(annotated.warnings)
+                annotation_stats = annotated.stats
+                annotated_ok = True
             timings["annotate"] = time.monotonic() - step
     finally:
         store.close()
@@ -141,7 +147,7 @@ def analyze_static(
         "created_at": datetime.now(UTC).isoformat(timespec="seconds"),
         "content_hash": snapshot.content_hash,
         "mode": "static",
-        "annotated": client is not None,
+        "annotated": annotated_ok,
         "api": settings.api if client else None,
         "endpoint": settings.endpoint if client else None,
         "model": settings.model if client else None,

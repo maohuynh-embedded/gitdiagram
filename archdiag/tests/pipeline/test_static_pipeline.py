@@ -137,3 +137,14 @@ def test_large_repositories_collapse_to_layers(tmp_path: Path, make_tree: MakeTr
     children = [v for v in model.views if v.parent == "dependencies"]
     assert len(children) == 4
     assert all(len(v.node_ids) <= 60 for v in model.views)
+
+
+def test_unavailable_llm_still_writes_static_diagrams(mini_repo: Path) -> None:
+    from archdiag.llm.client import LLMUnavailable
+
+    client = FakeClient([LLMUnavailable("Cannot reach the LLM runtime")])
+    result = analyze_static(mini_repo, mini_repo / ".archdiag", SETTINGS, {}, client=client)
+    assert any("No annotation" in w for w in result.warnings)
+    run = json.loads((mini_repo / ".archdiag" / "run.json").read_text())
+    assert run["annotated"] is False
+    assert (mini_repo / ".archdiag" / "views" / "dependencies.mmd").is_file()

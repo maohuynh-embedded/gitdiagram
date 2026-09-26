@@ -48,21 +48,21 @@ def test_analyze_succeeds(
     mini_repo: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
     use_client(monkeypatch, FakeClient([good_reply()]))
-    assert cli.main(["analyze", str(mini_repo)]) == 0
+    assert cli.main(["analyze", str(mini_repo), "--mode", "llm"]) == 0
     assert (mini_repo / ".archdiag" / "model.json").is_file()
     captured = capsys.readouterr()
-    assert "3 nodes, 2 edges" in captured.out
+    assert "llm: 3 nodes, 2 edges" in captured.out
     assert "[scan]" in captured.err
 
 
 def test_validation_failure_exits_1(mini_repo: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     use_client(monkeypatch, FakeClient(["x", "y", "z"]))
-    assert cli.main(["analyze", str(mini_repo)]) == 1
+    assert cli.main(["analyze", str(mini_repo), "--mode", "llm"]) == 1
 
 
 def test_unavailable_runtime_exits_2(mini_repo: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     use_client(monkeypatch, FakeClient([LLMUnavailable("no ollama")]))
-    assert cli.main(["analyze", str(mini_repo)]) == 2
+    assert cli.main(["analyze", str(mini_repo), "--mode", "llm"]) == 2
 
 
 def test_doctor_reports_ready_model(
@@ -94,7 +94,50 @@ def test_bench_writes_report(
     mini_repo: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
     use_client(monkeypatch, FakeClient([good_reply()]))
-    assert cli.main(["bench", str(mini_repo), "--expected", str(EXPECTED)]) == 0
+    assert cli.main(["bench", str(mini_repo), "--mode", "llm", "--expected", str(EXPECTED)]) == 0
     report = json.loads((mini_repo / ".archdiag" / "bench.json").read_text())
     assert report["component_recall"] == 1.0
     assert "component recall" in capsys.readouterr().out
+
+
+def test_auto_mode_runs_static_analysis_without_llm(
+    mini_repo: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    assert cli.main(["analyze", str(mini_repo), "--no-llm"]) == 0
+    out = capsys.readouterr().out
+    assert out.startswith("static: ")
+    assert "4 components, 0 violation(s), 3 views" in out
+    assert (mini_repo / ".archdiag" / "views" / "system.mmd").is_file()
+
+
+def test_llm_mode_needs_a_model(mini_repo: Path) -> None:
+    assert cli.main(["analyze", str(mini_repo), "--mode", "llm", "--no-llm"]) == 2
+
+
+def test_check_exits_3_on_violations(
+    mini_repo: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    assert cli.main(["check", str(mini_repo)]) == 0
+    (mini_repo / "archdiag.toml").write_text(
+        '[architecture]\nlayers = ["hal", "app"]\n'
+        '[[architecture.components]]\nname = "app"\nlayer = "app"\npaths = ["src/app/**"]\n'
+        '[[architecture.components]]\nname = "hal"\nlayer = "hal"\n'
+        'paths = ["src/hal/**", "src/drivers/**"]\n'
+        '[[architecture.components]]\nname = "tests"\npaths = ["tests/**"]\n'
+    )
+    capsys.readouterr()
+    assert cli.main(["check", str(mini_repo)]) == 3
+    out = capsys.readouterr().out
+    assert "layer-order: app -> hal" in out
+    assert "src/app/main.c:1" in out
+
+
+def test_bench_compare(
+    mini_repo: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    use_client(monkeypatch, FakeClient([good_reply()] + ["{}"] * 20))
+    code = cli.main(["bench", str(mini_repo), "--compare", "--expected", str(EXPECTED)])
+    assert code == 0
+    out = capsys.readouterr().out
+    assert "llm" in out and "static" in out
+    assert (mini_repo / ".archdiag" / "static" / "bench.json").is_file()

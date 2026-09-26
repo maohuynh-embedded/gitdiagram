@@ -13,15 +13,12 @@ from fastapi import FastAPI, HTTPException, Request, Response
 from fastapi.responses import FileResponse, JSONResponse, PlainTextResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 
-from archdiag.config import Settings
-from archdiag.llm.client import ChatClient
-from archdiag.pipeline import (
-    DIAGRAM_FILE,
-    EXPLANATION_FILE,
-    MODEL_FILE,
-    RUN_FILE,
-    analyze,
-)
+from archdiag.pipeline import DIAGRAM_FILE, EXPLANATION_FILE, MODEL_FILE, RUN_FILE, VIEWS_DIR
+from archdiag.render.views import safe_view_file
+from archdiag.run import RunOutcome
+
+Progress = Callable[[str, str], None]
+Runner = Callable[[Progress], RunOutcome]
 
 STATIC_DIR = Path(__file__).parent / "static"
 MAX_PREVIEW_BYTES = 512 * 1024
@@ -41,13 +38,7 @@ def _resolve_inside(root: Path, rel: str) -> Path:
     return candidate
 
 
-def create_app(
-    repo: Path,
-    out: Path,
-    settings: Settings,
-    client_factory: Callable[[], ChatClient],
-    port: int,
-) -> FastAPI:
+def create_app(repo: Path, out: Path, runner: Runner, port: int) -> FastAPI:
     root = repo.resolve()
     out = out.resolve()
     allowed_hosts = {f"127.0.0.1:{port}", f"localhost:{port}"}
@@ -92,11 +83,28 @@ def create_app(
             "run": json.loads(run_path.read_text(encoding="utf-8")) if run_path.is_file() else {},
         }
 
+    @app.get("/api/views")
+    def views() -> list[dict[str, Any]]:
+        try:
+            data = json.loads((out / MODEL_FILE).read_text(encoding="utf-8"))
+        except FileNotFoundError as exc:
+            raise HTTPException(404, "No analysis yet.") from exc
+        return [
+            {"id": v["id"], "title": v["title"], "level": v.get("level"),
+             "parent": v.get("parent"), "description": v.get("description", "")}
+            for v in data.get("views", [])
+        ]
+
     @app.get("/api/diagram")
-    def diagram() -> PlainTextResponse:
-        path = out / DIAGRAM_FILE
-        if not path.is_file():
-            raise HTTPException(404, "No diagram yet.")
+    def diagram(view: str = "") -> PlainTextResponse:
+        if view:
+            if "/" in view.replace("/", "", 1) or ".." in view or "\\" in view:
+                raise HTTPException(400, "Invalid view id.")
+            path = out / VIEWS_DIR / safe_view_file(view)
+        else:
+            path = out / DIAGRAM_FILE
+        if not path.resolve().is_relative_to(out) or not path.is_file():
+            raise HTTPException(404, "No such diagram.")
         return PlainTextResponse(path.read_text(encoding="utf-8"))
 
     @app.get("/api/file")
@@ -126,16 +134,15 @@ def create_app(
 
         def work() -> None:
             try:
-                result = analyze(
-                    root, out, settings, client_factory(), use_cache=False,
-                    progress=lambda step, message: events.put(
-                        ("progress", {"step": step, "message": message})
-                    ),
-                )
+                outcome = runner(lambda step, message: events.put(
+                    ("progress", {"step": step, "message": message})
+                ))
                 events.put(("done", {
-                    "nodes": len(result.model.nodes),
-                    "edges": len(result.model.edges),
-                    "warnings": list(result.warnings),
+                    "mode": outcome.mode,
+                    "nodes": len(outcome.model.nodes),
+                    "edges": len(outcome.model.edges),
+                    "detail": outcome.detail,
+                    "warnings": list(outcome.warnings),
                 }))
             except Exception as exc:  # reported to the page, never swallowed silently
                 events.put(("error", {"message": str(exc)}))
@@ -158,11 +165,9 @@ def create_app(
     return app
 
 
-def serve(
-    repo: Path, out: Path, settings: Settings, client_factory: Callable[[], ChatClient], port: int
-) -> None:
+def serve(repo: Path, out: Path, runner: Runner, port: int) -> None:
     import uvicorn
 
-    app = create_app(repo, out, settings, client_factory, port)
+    app = create_app(repo, out, runner, port)
     print(f"archdiag is serving {repo.resolve()} at http://127.0.0.1:{port}  (Ctrl+C to stop)")
     uvicorn.run(app, host="127.0.0.1", port=port, log_level="warning")
