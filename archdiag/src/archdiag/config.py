@@ -12,6 +12,11 @@ from urllib.parse import urlparse
 API_KINDS = ("ollama", "openai")
 USER_CONFIG = Path.home() / ".config" / "archdiag" / "config.toml"
 REPO_CONFIG_NAME = "archdiag.toml"
+# Tables owned by other loaders (architecture, protocols, standard views); Settings skips them.
+SECTION_KEYS = frozenset({
+    "architecture", "protocol", "c4", "archimate", "sysml", "autosar", "safety",
+    "requirements", "stakeholders", "concerns", "decisions",
+})
 
 
 class ConfigError(Exception):
@@ -58,6 +63,8 @@ def apply_settings(base: Settings, data: dict[str, Any], source: str) -> Setting
     known = {f.name for f in fields(Settings)}
     updates: dict[str, Any] = {}
     for key, value in data.items():
+        if key in SECTION_KEYS:
+            continue
         if key not in known:
             raise ConfigError(f"{source}: unknown setting '{key}'")
         updates[key] = _coerce_value(key, getattr(base, key), value, source)
@@ -93,6 +100,16 @@ def load_settings(
         given = {key: value for key, value in overrides.items() if value is not None}
         settings = apply_settings(settings, given, "command line")
     return settings
+
+
+def load_sections(repo: Path | None) -> dict[str, Any]:
+    """The raw tables of <repo>/archdiag.toml that Settings does not own."""
+    if repo is None:
+        return {}
+    path = repo / REPO_CONFIG_NAME
+    if not path.is_file():
+        return {}
+    return {k: v for k, v in _read_toml(path).items() if k in SECTION_KEYS}
 
 
 def is_loopback(endpoint: str) -> bool:

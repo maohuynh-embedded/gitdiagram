@@ -63,3 +63,17 @@ def test_unknown_api_is_rejected(tmp_path: Path) -> None:
 )
 def test_is_loopback(endpoint: str, expected: bool) -> None:
     assert is_loopback(endpoint) is expected
+
+
+def test_sections_are_left_to_their_own_loaders(tmp_path: Path) -> None:
+    from archdiag.config import load_sections
+
+    (tmp_path / "archdiag.toml").write_text(
+        'model = "m"\n[architecture]\nlayers = ["ui", "core"]\n'
+        '[[architecture.components]]\nname = "x"\npaths = ["x/**"]\n'
+    )
+    settings = load_settings(tmp_path, user_config=tmp_path / "none.toml")
+    assert settings.model == "m"
+    sections = load_sections(tmp_path)
+    assert sections["architecture"]["layers"] == ["ui", "core"]
+    assert load_sections(tmp_path / "missing") == {}
