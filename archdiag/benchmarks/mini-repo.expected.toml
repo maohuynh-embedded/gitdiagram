@@ -1,0 +1,22 @@
+# Expected architecture of tests/fixtures/mini-repo, used by `archdiag bench`.
+forbidden = ["build/**", "third_party/**"]
+
+[[components]]
+name = "app"
+paths = ["src/app/**"]
+
+[[components]]
+name = "can"
+paths = ["src/drivers/can/**"]
+
+[[components]]
+name = "gpio"
+paths = ["src/hal/**"]
+
+[[relations]]
+from = "app"
+to = "can"
+
+[[relations]]
+from = "app"
+to = "gpio"
