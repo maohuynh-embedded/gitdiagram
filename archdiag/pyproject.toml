@@ -56,5 +56,5 @@ python_version = "3.12"
 files = ["src"]
 
 [[tool.mypy.overrides]]
-module = ["clang", "clang.*"]
+module = ["clang", "clang.*", "lxml", "lxml.*"]
 ignore_missing_imports = true

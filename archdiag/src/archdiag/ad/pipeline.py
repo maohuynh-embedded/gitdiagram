@@ -10,41 +10,56 @@ from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Any
 
-from archdiag.ad.build import build_ad
-from archdiag.ad.config import ADConfig, load_ad_config
+from archdiag.ad.build import _files_under, build_ad
+from archdiag.ad.config import load_ad_config
+from archdiag.ad.context import ExportContext
 from archdiag.ad.correspondence import check_correspondences
 from archdiag.ad.document import render_document
 from archdiag.ad.export.archimate import export_archimate
+from archdiag.ad.export.autosar import export_autosar
 from archdiag.ad.export.c4 import export_c4
+from archdiag.ad.export.safety import export_safety
 from archdiag.ad.export.sysml import export_sysml
 from archdiag.ad.model import AD
 from archdiag.ad.validate import ExportResult
 from archdiag.config import ConfigError, Settings, load_sections
+from archdiag.facts.model import Fact
+from archdiag.facts.protocol_config import load_protocol_config
+from archdiag.facts.runner import collect_facts
+from archdiag.facts.store import FactStore
 from archdiag.llm.client import ChatClient
-from archdiag.pipeline import _write_atomic
+from archdiag.pipeline import _excluded_output, _write_atomic
 from archdiag.run import run_analysis
 from archdiag.scan.snapshot import RepoSnapshot, build_snapshot
+from archdiag.static_pipeline import FACTS_FILE
 
 Progress = Callable[[str, str], None]
 AD_DIR = "ad"
 DOCUMENT = "architecture-description.md"
-Exporter = Callable[[AD, RepoSnapshot, ADConfig], ExportResult]
+Exporter = Callable[[AD, ExportContext], ExportResult]
 
 
-def _c4(ad: AD, snapshot: RepoSnapshot, config: ADConfig) -> ExportResult:
+def _c4(ad: AD, ctx: ExportContext) -> ExportResult:
     return export_c4(ad)
 
 
-def _archimate(ad: AD, snapshot: RepoSnapshot, config: ADConfig) -> ExportResult:
+def _archimate(ad: AD, ctx: ExportContext) -> ExportResult:
     return export_archimate(ad)
 
 
-def _sysml(ad: AD, snapshot: RepoSnapshot, config: ADConfig) -> ExportResult:
-    return export_sysml(ad, config.sysml_validator)
+def _sysml(ad: AD, ctx: ExportContext) -> ExportResult:
+    return export_sysml(ad, ctx.config.sysml_validator)
 
 
-EXPORTERS: dict[str, Exporter] = {"c4": _c4, "archimate": _archimate, "sysml": _sysml}
-ALL_NOTATIONS = ("c4", "archimate", "sysml", "autosar", "safety")
+# Order matters: safety runs last because it adds requirement elements to the AD.
+EXPORTERS: dict[str, Exporter] = {
+    "c4": _c4,
+    "archimate": _archimate,
+    "sysml": _sysml,
+    "autosar": export_autosar,
+    "safety": export_safety,
+}
+ALL_NOTATIONS = tuple(EXPORTERS)
 
 
 @dataclass
@@ -54,10 +69,6 @@ class ADResult:
     out_dir: Path
     errors: int
     warnings: int
-
-
-def register(name: str, exporter: Exporter) -> None:
-    EXPORTERS[name] = exporter
 
 
 def _version(repo: Path, snapshot: RepoSnapshot) -> str:
@@ -79,6 +90,15 @@ def _version(repo: Path, snapshot: RepoSnapshot) -> str:
     if head.returncode != 0:
         return f"content {snapshot.content_hash[:12]}"
     return head.stdout.strip() + ("-dirty" if dirty.stdout.strip() else "")
+
+
+def _facts(snapshot: RepoSnapshot, sections: dict[str, Any], out: Path) -> list[Fact]:
+    """The static run just filled the cache, so this is a cheap read."""
+    store = FactStore(out / FACTS_FILE)
+    try:
+        return collect_facts(snapshot, load_protocol_config(sections.get("protocol")), store).facts
+    finally:
+        store.close()
 
 
 def generate_ad(
@@ -107,17 +127,23 @@ def generate_ad(
         compile_db=compile_db,
         progress=progress,
     )
-    snapshot = build_snapshot(repo, settings.include, settings.exclude)
+    snapshot = build_snapshot(
+        repo, settings.include, (*settings.exclude, *_excluded_output(repo, out))
+    )
     ad = build_ad(outcome.model, snapshot, config, _version(repo, snapshot))
+    ctx = ExportContext(repo, snapshot, config, _facts(snapshot, sections, out), {})
+    for element in ad.of_type("component", "test"):
+        for path in _files_under(element.paths, snapshot):
+            ctx.component_of.setdefault(path, element.id)
 
     results: dict[str, ExportResult] = {}
-    for name in notations:
-        exporter = EXPORTERS.get(name)
-        if exporter is None:
+    for name in EXPORTERS:
+        if name not in notations:
             continue
+        exporter = EXPORTERS[name]
         if progress:
             progress("ad", f"exporting {name}")
-        result = exporter(ad, snapshot, config)
+        result = exporter(ad, ctx)
         results[name] = result
         ad.views.extend(result.views)
     ad.correspondences = check_correspondences(ad, results)

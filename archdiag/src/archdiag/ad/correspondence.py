@@ -17,7 +17,8 @@ def check_correspondences(ad: AD, results: Mapping[str, ExportResult]) -> list[C
     traced = [
         e.id
         for e in ad.elements.values()
-        if e.type not in _SYNTHETIC | {"person", "external_system", "layer"} and not e.b_ids
+        if e.type not in _SYNTHETIC | {"person", "external_system", "layer", "requirement"}
+        and not e.b_ids
     ]
     out.append(
         Correspondence(

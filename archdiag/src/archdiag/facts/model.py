@@ -18,6 +18,7 @@ INCLUDE_DIR = "include_dir"
 MESSAGE = "message"
 MESSAGE_IO = "message_io"
 CALL = "call"
+TAG = "tag"
 
 # Sources
 TREESITTER = "treesitter"

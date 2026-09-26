@@ -201,3 +201,35 @@ def test_c_sources() -> None:
 def test_broken_code_does_not_raise() -> None:
     facts = extract_file("x.cpp", b"class { ;;; #include <", "cpp", PROTOCOLS)
     assert isinstance(facts, list)
+
+
+def test_traceability_tags_in_comments() -> None:
+    source = b"""/**
+ * CAN transmit path.
+ * @req SW-REQ-042
+ * @asil B
+ */
+void can_send(void) {}
+// @safety_goal: SG-1  @requirement SW-REQ-043.
+int x; /* @Req SYS-7 */
+"""
+    facts = extract_file("src/can.c", source, "c", PROTOCOLS)
+    tags = [(f.data["tag"], f.data["value"], f.line) for f in facts if f.kind == "tag"]
+    assert tags == [
+        ("req", "SW-REQ-042", 3),
+        ("asil", "B", 4),
+        ("safety_goal", "SG-1", 7),
+        ("req", "SW-REQ-043", 7),
+        ("req", "SYS-7", 8),
+    ]
+
+
+def test_autosar_rte_calls_are_message_io() -> None:
+    source = b"void run(void) { Rte_Write_PpSpeed_value(3); Rte_Read_RpBrake_pressure(&p); }"
+    io = [
+        (f.data["protocol"], f.data["direction"], f.data["function"])
+        for f in extract_file("swc/speed.c", source, "c", PROTOCOLS)
+        if f.kind == "message_io"
+    ]
+    assert ("autosar-rte", "send", "Rte_Write_PpSpeed_value") in io
+    assert ("autosar-rte", "recv", "Rte_Read_RpBrake_pressure") in io

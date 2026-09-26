@@ -20,13 +20,14 @@ from archdiag.facts.model import (
     MESSAGE_IO,
     PATTERN,
     SYMBOL,
+    TAG,
     TREESITTER,
     Confidence,
     Fact,
 )
 from archdiag.facts.protocol_config import ProtocolConfig
 
-EXTRACTOR_VERSION = "ts-1"
+EXTRACTOR_VERSION = "ts-2"
 
 C_LANGUAGES = frozenset({"c"})
 CPP_LANGUAGES = frozenset({"c-header", "cpp", "cpp-header"})
@@ -37,6 +38,10 @@ _QT_TOKEN = re.compile(rb"\b(?:Q_INVOKABLE|Q_SIGNAL|Q_SLOT|Q_EMIT|emit)\b")
 _QT_SLOTS = re.compile(rb"\b(public|protected|private)([ \t]+(?:slots|Q_SLOTS))([ \t]*:)")
 _QT_SIGNALS = re.compile(rb"\b(?:signals|Q_SIGNALS)[ \t]*:")
 _EXPORT_MACRO = re.compile(rb"\b(class|struct)([ \t]+)([A-Z][A-Z0-9_]*_(?:EXPORT|API|DLL)\w*)")
+_TAG = re.compile(
+    r"@(req|requirement|asil|safety_goal)\b[ \t]*[:=]?[ \t]*([A-Za-z0-9_.:/-]+)", re.I
+)
+_TAG_NAMES = {"requirement": "req"}
 _INT_SUFFIX = re.compile(r"[uUlL]+$")
 _CLASS_TYPES = {
     "class_specifier": "class",
@@ -130,6 +135,9 @@ class _Extractor:
         if kind == "preproc_def":
             self.define(node)
             return
+        if kind == "comment":
+            self.tags(node)
+            return
         if kind == "declaration":
             self.constant(node)
         if kind == "function_definition":
@@ -138,6 +146,22 @@ class _Extractor:
             self.call(node)
         for child in node.children:
             self.visit(child, ns, owner, cond)
+
+    def tags(self, node: Node) -> None:
+        text = self.text(node)
+        for offset, line in enumerate(text.split("\n")):
+            for match in _TAG.finditer(line):
+                tag = match.group(1).lower()
+                self.facts.append(
+                    Fact(
+                        TAG,
+                        self.path,
+                        node.start_point.row + 1 + offset,
+                        TREESITTER,
+                        Confidence.HIGH,
+                        {"tag": _TAG_NAMES.get(tag, tag), "value": match.group(2).rstrip(".:")},
+                    )
+                )
 
     def is_include_guard(self, node: Node) -> bool:
         if node.type != "preproc_ifdef" or not self.text(node).startswith("#ifndef"):

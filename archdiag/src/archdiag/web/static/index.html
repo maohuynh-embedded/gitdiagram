@@ -19,6 +19,7 @@
         <select id="view-select" aria-label="View"></select>
       </label>
       <button id="btn-up" type="button" hidden title="Back to the parent view">↑ Up</button>
+      <button id="btn-ad" type="button" hidden title="ISO/IEC/IEEE 42010 architecture description">Architecture description</button>
       <button id="btn-fit" type="button" title="Fit the diagram to the window">Fit</button>
       <button id="btn-copy" type="button" title="Copy the Mermaid source">Copy Mermaid</button>
       <button id="btn-svg" type="button">SVG</button>
@@ -37,6 +38,17 @@
       </div>
       <p id="view-description" class="view-description"></p>
       <p class="hint">Scroll to zoom · drag to pan · click a component for details</p>
+    </section>
+
+    <section id="ad-page" class="ad-page" hidden aria-label="Architecture description">
+      <div class="ad-toolbar">
+        <button id="btn-ad-close" type="button">← Diagram</button>
+        <label>Files
+          <select id="ad-files" aria-label="Download a generated file"></select>
+        </label>
+        <button id="btn-ad-download" type="button">Download</button>
+      </div>
+      <article id="ad-doc" class="prose ad-doc"></article>
     </section>
 
     <aside class="side">

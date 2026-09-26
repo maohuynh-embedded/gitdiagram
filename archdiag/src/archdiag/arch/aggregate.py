@@ -326,7 +326,8 @@ def aggregate(
         if fact.kind != MESSAGE_IO or fact.file not in component_of:
             continue
         component = component_of[fact.file]
-        if kind_of.get(component) == "test":
+        # RTE calls are ports to the AUTOSAR RTE, not device traffic; C reads them from facts.
+        if kind_of.get(component) == "test" or fact.data.get("protocol") == "autosar-rte":
             continue
         function = str(fact.data["function"])
         send = fact.data.get("direction") == "send"

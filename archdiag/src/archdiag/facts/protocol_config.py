@@ -84,7 +84,12 @@ PRESETS: dict[str, ProtocolPattern] = {
         ),
     ),
 }
-DEFAULT_PRESETS = ("can", "canopen")
+PRESETS["autosar-rte"] = ProtocolPattern(
+    "autosar-rte",
+    send_calls=("Rte_Write_*", "Rte_IWrite_*", "Rte_Send_*", "Rte_Call_*"),
+    recv_calls=("Rte_Read_*", "Rte_IRead_*", "Rte_Receive_*", "Rte_Result_*"),
+)
+DEFAULT_PRESETS = ("can", "canopen", "autosar-rte")
 
 
 @dataclass(frozen=True)

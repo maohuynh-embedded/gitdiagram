@@ -139,3 +139,27 @@ def test_bench_compare(
     out = capsys.readouterr().out
     assert "llm" in out and "static" in out
     assert (mini_repo / ".archdiag" / "static" / "bench.json").is_file()
+
+
+def test_ad_command(mini_repo: Path, capsys: pytest.CaptureFixture[str]) -> None:
+    assert cli.main(["ad", str(mini_repo), "--no-llm", "--notation", "c4,sysml"]) == 0
+    out = capsys.readouterr().out
+    assert "0 error(s)" in out
+    assert (mini_repo / ".archdiag" / "ad" / "sysml" / "model.sysml").is_file()
+    assert not (mini_repo / ".archdiag" / "ad" / "archimate").exists()
+    assert cli.main(["ad", str(mini_repo), "--no-llm", "--notation", "uml"]) == 2
+
+
+def test_ad_strict_exits_3_on_errors(mini_repo: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    from archdiag.ad import pipeline
+
+    def broken(ad, ctx):  # type: ignore[no-untyped-def]
+        from archdiag.ad.validate import ExportResult
+
+        result = ExportResult("c4")
+        result.error("boom")
+        return result
+
+    monkeypatch.setitem(pipeline.EXPORTERS, "c4", broken)
+    assert cli.main(["ad", str(mini_repo), "--no-llm", "--notation", "c4"]) == 0
+    assert cli.main(["ad", str(mini_repo), "--no-llm", "--notation", "c4", "--strict"]) == 3

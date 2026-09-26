@@ -113,6 +113,39 @@ def create_app(repo: Path, out: Path, runner: Runner, port: int) -> FastAPI:
             raise HTTPException(404, "No such diagram.")
         return PlainTextResponse(path.read_text(encoding="utf-8"))
 
+    ad_dir = out / "ad"
+    ad_suffixes = {".md", ".mmd", ".puml", ".dsl", ".xml", ".sysml", ".csv", ".json"}
+
+    @app.get("/api/ad")
+    def architecture_description() -> dict[str, Any]:
+        document = ad_dir / "architecture-description.md"
+        if not document.is_file():
+            raise HTTPException(404, "No architecture description yet. Run `archdiag ad`.")
+        validation_path = ad_dir / "validation.json"
+        files = sorted(
+            p.relative_to(ad_dir).as_posix()
+            for p in ad_dir.rglob("*")
+            if p.is_file() and p.suffix in ad_suffixes
+        )
+        return {
+            "document": document.read_text(encoding="utf-8"),
+            "validation": json.loads(validation_path.read_text(encoding="utf-8"))
+            if validation_path.is_file()
+            else {},
+            "files": files,
+        }
+
+    @app.get("/api/ad/file")
+    def architecture_file(name: str = "") -> PlainTextResponse:
+        if not name or "\0" in name:
+            raise HTTPException(400, "A file name is required.")
+        target = (ad_dir / name).resolve()
+        if not target.is_relative_to(ad_dir.resolve()) or target.suffix not in ad_suffixes:
+            raise HTTPException(403, "Not an architecture-description file.")
+        if not target.is_file():
+            raise HTTPException(404, "No such file.")
+        return PlainTextResponse(target.read_text(encoding="utf-8"))
+
     @app.get("/api/file")
     def file_preview(path: str = "") -> dict[str, Any]:
         target = _resolve_inside(root, path)

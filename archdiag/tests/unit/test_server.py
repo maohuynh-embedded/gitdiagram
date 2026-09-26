@@ -149,3 +149,22 @@ def test_static_reanalysis_over_sse(mini_repo: Path) -> None:
     response = client.post("/api/analyze", headers={"Origin": BASE})
     assert "event: done" in response.text
     assert '"mode": "static"' in response.text
+
+
+def test_architecture_description_endpoints(mini_repo: Path) -> None:
+    from archdiag.ad.pipeline import generate_ad
+
+    client = app_for(mini_repo)
+    assert client.get("/api/ad").status_code == 404
+    generate_ad(mini_repo, mini_repo / ".archdiag", Settings())
+    body = client.get("/api/ad").json()
+    assert body["document"].startswith("# Architecture description")
+    assert "c4/context.mmd" in body["files"]
+    assert "archimate/model.xml" in body["files"]
+    assert "correspondences" in body["validation"]
+    context = client.get("/api/ad/file", params={"name": "c4/context.mmd"})
+    assert context.status_code == 200
+    assert context.text.startswith("C4Context")
+    for bad in ("../model.json", "../../README.md", "/etc/passwd"):
+        assert client.get("/api/ad/file", params={"name": bad}).status_code in (400, 403, 404)
+    assert client.get("/api/ad/file", params={"name": "../facts.db"}).status_code == 403
