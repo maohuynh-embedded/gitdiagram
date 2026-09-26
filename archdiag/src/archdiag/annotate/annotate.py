@@ -355,5 +355,5 @@ def annotate(
     if system is not None:
         target.title = " ".join(system.title.split())[:80] or target.title
         target.explanation = system.explanation.strip()
-    result.stats = {"llm_calls": called, "cached": cached, "failed": failed}
+    result.stats = {"llm_calls": called, "annotations_cached": cached, "annotations_failed": failed}
     return result

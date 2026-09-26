@@ -41,6 +41,7 @@ class NodeV2(_Base):
     description: str = ""
     responsibilities: list[str] = Field(default_factory=list)
     metrics: dict[str, int] = Field(default_factory=dict)
+    members: list[str] = Field(default_factory=list)  # component ids of a system/layer node
 
 
 class EdgeV2(_Base):

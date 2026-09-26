@@ -98,6 +98,10 @@ def build_views(components: Sequence[Component], agg: Aggregation, repo_name: st
     fallback = target_nodes[0].id
     for component_id in module_ids:
         component_targets.setdefault(component_id, fallback)
+    for target_node in target_nodes:
+        target_node.members = sorted(
+            c for c, owner in component_targets.items() if owner == target_node.id
+        )
     mapping = dict(component_targets)
     externals = [n for n in agg.nodes if n.level == "external"]
     external_weight: defaultdict[str, int] = defaultdict(int)
@@ -162,6 +166,7 @@ def build_views(components: Sequence[Component], agg: Aggregation, repo_name: st
                 )
                 layer_nodes[layer_id] = layer_node
             layer_node.metrics["components"] += 1
+            layer_node.members.append(component.id)
             layer_of[component.id] = layer_id
         layer_edges = _lift(dependency_edges, layer_of, {"depends"})
         result.nodes.extend(layer_nodes.values())
