@@ -36,7 +36,11 @@ def test_build_target_directories_are_not_split() -> None:
     files = [f"lib/core/sub{i % 3}/f{i}.c" for i in range(12)]
     comps = infer_components(files, {"lib/core"}, max_files=4)
     assert names(comps) == {"lib/core": 12}
-    assert target_dirs([files, ["main.c"], []]) == {"lib/core"}
+    assert target_dirs([{"kind": "library", "sources": files},
+                        {"kind": "executable", "sources": ["main.c"]}], 13) == {"lib/core"}
+    # the main executable spanning most of the tree is not a boundary
+    assert target_dirs([{"kind": "executable", "sources": files}], 13) == set()
+    assert target_dirs([{"kind": "executable", "sources": files[:3]}], 13) == {"lib/core"}
 
 
 def test_test_directories_are_marked() -> None:

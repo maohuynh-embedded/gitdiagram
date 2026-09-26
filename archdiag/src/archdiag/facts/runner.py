@@ -6,6 +6,7 @@ import hashlib
 import os
 from collections.abc import Callable
 from concurrent.futures import ProcessPoolExecutor
+from concurrent.futures.process import BrokenProcessPool
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -20,7 +21,8 @@ from archdiag.scan.snapshot import RepoSnapshot
 
 Progress = Callable[[str, str], None]
 
-_PARALLEL_THRESHOLD = 40
+# Process start-up costs more than parsing a few hundred files serially (~2 ms each).
+_PARALLEL_THRESHOLD = 600
 _CLANG_PREFIX = "clang::"
 
 
@@ -92,10 +94,14 @@ def collect_facts(
         else:
             per_file[entry.path] = cached
     report("facts", f"{len(keys)} C/C++ files, {len(jobs)} to parse, {len(per_file)} cached")
+    outputs: list[list[Fact]] | None = None
     if len(jobs) >= _PARALLEL_THRESHOLD and _workers(workers) > 1:
-        with ProcessPoolExecutor(max_workers=_workers(workers)) as pool:
-            outputs = list(pool.map(_ts_job, jobs, chunksize=8))
-    else:
+        try:
+            with ProcessPoolExecutor(max_workers=_workers(workers)) as pool:
+                outputs = list(pool.map(_ts_job, jobs, chunksize=16))
+        except (BrokenProcessPool, OSError) as exc:
+            result.warnings.append(f"Parallel parsing failed ({exc}); parsed serially instead.")
+    if outputs is None:
         outputs = [_ts_job(job) for job in jobs]
     for job, facts in zip(jobs, outputs, strict=True):
         path = job[1]
@@ -151,10 +157,14 @@ def collect_facts(
             report("facts", f"libclang: {len(entries)} translation units, {len(todo)} to parse")
             frozen = frozenset(files)
             jobs_clang = [(root, entry, frozen) for entry, _, _ in todo]
+            clang_out: list[tuple[list[Fact], list[str], str | None]] | None = None
             if len(jobs_clang) > 1 and _workers(workers) > 1:
-                with ProcessPoolExecutor(max_workers=_workers(workers)) as pool:
-                    clang_out = list(pool.map(_clang_job, jobs_clang))
-            else:
+                try:
+                    with ProcessPoolExecutor(max_workers=_workers(workers)) as pool:
+                        clang_out = list(pool.map(_clang_job, jobs_clang))
+                except (BrokenProcessPool, OSError) as exc:
+                    result.warnings.append(f"Parallel libclang failed ({exc}); ran serially.")
+            if clang_out is None:
                 clang_out = [_clang_job(job) for job in jobs_clang]
             failed = 0
             for (entry, key, cache_path), (facts, files_covered, error) in zip(

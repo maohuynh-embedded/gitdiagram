@@ -6,7 +6,7 @@ import hashlib
 import posixpath
 import re
 from collections import defaultdict
-from collections.abc import Collection, Iterable, Sequence
+from collections.abc import Collection, Iterable, Mapping, Sequence
 from dataclasses import dataclass, replace
 
 import pathspec
@@ -189,14 +189,22 @@ def build_components(files: Sequence[str], atomic_dirs: Collection[str],
     return assign_layers(components, config)
 
 
-def target_dirs(target_sources: Iterable[Sequence[str]]) -> set[str]:
-    """Directories that own a whole build target (besides the root) stay one component."""
+def target_dirs(targets: Iterable[Mapping[str, object]], total_files: int) -> set[str]:
+    """Directories that own a library, or a small target, stay one component.
+
+    An executable that spans most of the tree (the main application) says nothing about
+    internal boundaries, so it never makes its directory atomic.
+    """
     dirs: set[str] = set()
-    for sources in target_sources:
+    for target in targets:
+        sources = [str(s) for s in target.get("sources", []) or []]  # type: ignore[attr-defined]
         folders = {posixpath.dirname(s) for s in sources}
-        if not folders:
+        if not folders or not all(folders):
             continue
-        common = posixpath.commonpath(sorted(folders)) if all(folders) else ""
+        is_library = target.get("kind") == "library"
+        if not is_library and len(sources) * 2 >= max(total_files, 1):
+            continue
+        common = posixpath.commonpath(sorted(folders))
         if common:
             dirs.add(common)
     return dirs

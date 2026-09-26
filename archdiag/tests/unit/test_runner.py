@@ -48,13 +48,16 @@ def test_second_run_is_cached_and_changes_are_reparsed(mini_repo: Path, tmp_path
     assert fourth.stats["parsed"] == 6
 
 
-def test_parallel_extraction_matches_serial(tmp_path: Path, make_tree: MakeTree) -> None:
+def test_parallel_extraction_matches_serial(
+    tmp_path: Path, make_tree: MakeTree, monkeypatch: pytest.MonkeyPatch
+) -> None:
     files: dict[str, str | bytes] = {
         f"m{i}/f{i}.c": f'#include "m{(i + 1) % 50}/f{(i + 1) % 50}.h"\nint f{i};\n'
         for i in range(50)
     }
     files.update({f"m{i}/f{i}.h": f"int g{i};\n" for i in range(50)})
     repo = make_tree(tmp_path / "repo", files)
+    monkeypatch.setattr("archdiag.facts.runner._PARALLEL_THRESHOLD", 10)
     serial = collect_facts(build_snapshot(repo), PROTOCOLS, FactStore(tmp_path / "a.db"), workers=1)
     parallel = collect_facts(build_snapshot(repo), PROTOCOLS, FactStore(tmp_path / "b.db"),
                              workers=4)

@@ -148,7 +148,8 @@ def _cmd_bench(args: argparse.Namespace) -> int:
     result = analyze(repo, out, settings, make_client(settings),
                      use_cache=not args.no_cache, progress=_progress)
     snapshot = build_snapshot(repo, settings.include, settings.exclude)
-    report = score(result.model, expected, snapshot.known_paths())
+    report = score(result.model, expected, snapshot.known_paths(),
+                   [f.path for f in snapshot.files])
     (out / "bench.json").write_text(json.dumps(report.to_dict(), indent=2), encoding="utf-8")
     print(format_report(report))
     return EXIT_OK

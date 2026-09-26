@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import tomllib
+from collections.abc import Collection, Iterable
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import Any
@@ -10,7 +11,7 @@ from typing import Any
 import pathspec
 
 from archdiag.config import ConfigError
-from archdiag.model.schema import ArchModel, Node
+from archdiag.model.schema_v2 import ArchModelV2
 from archdiag.model.validate import normalize_path
 
 _DIR_PROBE = "__archdiag_probe__"
@@ -79,33 +80,62 @@ def _matches(spec: pathspec.GitIgnoreSpec, path: str) -> bool:
     return spec.match_file(path) or spec.match_file(f"{path}/{_DIR_PROBE}")
 
 
-def _node_components(node: Node, specs: dict[str, pathspec.GitIgnoreSpec]) -> set[str]:
-    paths = [normalize_path(p) for p in node.paths]
-    return {name for name, spec in specs.items() if any(_matches(spec, p) for p in paths)}
+MAJORITY = 0.5  # a node "holds" a component when it contains at least half of its files
+INSIDE = 0.8  # a node "sits inside" a component when most of its own files belong to it
 
 
-def score(model: ArchModel, expected: Expected, known_paths: frozenset[str]) -> BenchReport:
-    specs = {
-        c.name: pathspec.GitIgnoreSpec.from_lines(c.paths) for c in expected.components
+def _files_under(paths: Iterable[str], files: Collection[str]) -> set[str]:
+    out: set[str] = set()
+    for raw in paths:
+        path = normalize_path(raw)
+        prefix = f"{path}/"
+        out.update(f for f in files if f == path or f.startswith(prefix))
+    return out
+
+
+def score(model: ArchModelV2, expected: Expected, known_paths: frozenset[str],
+          files: Collection[str]) -> BenchReport:
+    """Compare by file sets, so a coarser or finer split of the same code is still credited."""
+    specs = {c.name: pathspec.GitIgnoreSpec.from_lines(c.paths) for c in expected.components}
+    component_files = {
+        name: {f for f in files if _matches(spec, f)} for name, spec in specs.items()
     }
-    by_node = {node.id: _node_components(node, specs) for node in model.nodes}
-    found = sorted({name for names in by_node.values() for name in names})
+    nodes = [n for n in model.nodes if n.level in ("component", "layer")]
+    node_files = {n.id: _files_under(n.paths, files) for n in nodes}
+
+    membership: dict[str, set[str]] = {n.id: set() for n in nodes}
+    found: list[str] = []
+    for name, wanted in component_files.items():
+        if not wanted:
+            continue
+        holders = [nid for nid, owned in node_files.items()
+                   if owned and len(owned & wanted) >= MAJORITY * len(wanted)]
+        inside = [nid for nid, owned in node_files.items()
+                  if owned and len(owned & wanted) >= INSIDE * len(owned)]
+        covered = len(set().union(*(node_files[n] & wanted for n in inside))) if inside else 0
+        for nid in {*holders, *inside}:
+            membership[nid].add(name)
+        if holders or covered >= MAJORITY * len(wanted):
+            found.append(name)
+    found.sort()
     missing = [c.name for c in expected.components if c.name not in found]
 
     found_relations: list[tuple[str, str]] = []
     missing_relations: list[tuple[str, str]] = []
     for source, target in expected.relations:
         hit = any(
-            source in by_node.get(edge.source, set()) and target in by_node.get(edge.target, set())
+            edge.source != edge.target
+            and source in membership.get(edge.source, set())
+            and target in membership.get(edge.target, set())
             for edge in model.edges
         )
         (found_relations if hit else missing_relations).append((source, target))
 
-    all_paths = [normalize_path(p) for node in model.nodes for p in node.paths]
+    all_paths = [normalize_path(p) for node in nodes for p in node.paths]
     valid = sum(1 for p in all_paths if p in known_paths)
     forbidden = pathspec.GitIgnoreSpec.from_lines(expected.forbidden)
     junk = [
-        node.id for node in model.nodes
+        node.id for node in nodes
         if any(_matches(forbidden, normalize_path(p)) for p in node.paths)
     ]
 

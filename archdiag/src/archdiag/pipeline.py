@@ -21,10 +21,12 @@ from archdiag.config import Settings
 from archdiag.context.select import select_evidence
 from archdiag.llm.client import ChatClient, LLMTimeout, Message
 from archdiag.llm.prompts import PROMPT_VERSION, build_messages, retry_message
-from archdiag.model.schema import SCHEMA_VERSION, ArchModel, llm_json_schema
+from archdiag.model.schema import SCHEMA_VERSION, llm_json_schema
+from archdiag.model.schema_v2 import ArchModelV2, load_model, upgrade_v1
 from archdiag.model.validate import ValidationResult, validate_raw
 from archdiag.render.explanation import render_explanation
 from archdiag.render.mermaid import compile_mermaid
+from archdiag.render.views import safe_view_file
 from archdiag.scan.snapshot import RepoSnapshot, build_snapshot
 
 Progress = Callable[[str, str], None]
@@ -34,6 +36,7 @@ DIAGRAM_FILE = "diagram.mmd"
 EXPLANATION_FILE = "explanation.md"
 RUN_FILE = "run.json"
 DEBUG_DIR = "debug"
+VIEWS_DIR = "views"
 
 
 class AnalysisError(Exception):
@@ -42,7 +45,7 @@ class AnalysisError(Exception):
 
 @dataclass(frozen=True)
 class AnalysisResult:
-    model: ArchModel
+    model: ArchModelV2
     mermaid: str
     warnings: tuple[str, ...]
     attempts: int
@@ -74,7 +77,7 @@ def _load_cached(out: Path, key: str) -> AnalysisResult | None:
         run = json.loads((out / RUN_FILE).read_text(encoding="utf-8"))
         if run.get("cache_key") != key:
             return None
-        model = ArchModel.model_validate_json((out / MODEL_FILE).read_text(encoding="utf-8"))
+        model = load_model((out / MODEL_FILE).read_text(encoding="utf-8"))
         mermaid = (out / DIAGRAM_FILE).read_text(encoding="utf-8")
     except (OSError, ValueError):
         return None
@@ -171,13 +174,16 @@ def analyze(
             f"The model output failed validation after {attempts} attempts; see {debug_dir}"
         )
 
-    model = result.model
+    model_v1 = result.model
     warnings.extend(result.warnings)
     report("render", "writing outputs")
-    mermaid = compile_mermaid(model)
+    mermaid = compile_mermaid(model_v1)
+    model = upgrade_v1(model_v1)
     _write_atomic(out / MODEL_FILE, model.to_json())
     _write_atomic(out / DIAGRAM_FILE, mermaid)
-    _write_atomic(out / EXPLANATION_FILE, render_explanation(model))
+    shutil.rmtree(out / VIEWS_DIR, ignore_errors=True)
+    _write_atomic(out / VIEWS_DIR / safe_view_file("overview"), mermaid)
+    _write_atomic(out / EXPLANATION_FILE, render_explanation(model_v1))
     timings["total"] = time.monotonic() - started
     run = {
         "archdiag_version": __version__,
