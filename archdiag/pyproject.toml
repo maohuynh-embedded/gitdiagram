@@ -23,6 +23,7 @@ dependencies = [
 
 [project.optional-dependencies]
 clang = ["libclang>=18"]
+validate = ["lxml>=5"]
 
 dev = ["pytest>=8", "ruff>=0.8", "mypy>=1.13"]
 

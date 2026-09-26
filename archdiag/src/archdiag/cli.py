@@ -10,6 +10,7 @@ from collections.abc import Callable, Sequence
 from pathlib import Path
 
 from archdiag import __version__
+from archdiag.ad.pipeline import ALL_NOTATIONS
 from archdiag.bench import BenchReport, format_report, load_expected, score
 from archdiag.config import USER_CONFIG, ConfigError, Settings, is_loopback, load_settings
 from archdiag.llm.client import ChatClient, LLMError, LLMUnavailable, make_client
@@ -87,6 +88,26 @@ def _parser() -> argparse.ArgumentParser:
     doctor_cmd = commands.add_parser("doctor", help="check the local LLM setup")
     doctor_cmd.add_argument("repo", type=Path, nargs="?", help="repository (for its config)")
     _add_llm_options(doctor_cmd)
+
+    ad_cmd = commands.add_parser(
+        "ad", help="write the ISO 42010 architecture description with standard notations"
+    )
+    _add_repo_options(ad_cmd)
+    ad_cmd.add_argument(
+        "--notation",
+        default=",".join(ALL_NOTATIONS),
+        help=f"comma-separated subset of {','.join(ALL_NOTATIONS)}",
+    )
+    ad_cmd.add_argument("--no-llm", action="store_true", help="no annotation or overview text")
+    ad_cmd.add_argument("--compile-db", type=Path)
+    ad_cmd.add_argument(
+        "--strict", action="store_true", help="exit 3 when a validator reports an error"
+    )
+
+    fetch_cmd = commands.add_parser(
+        "fetch-schemas", help="download the ArchiMate exchange-format XSDs once"
+    )
+    fetch_cmd.add_argument("--force", action="store_true")
 
     bench_cmd = commands.add_parser("bench", help="score the result against an answer file")
     _add_repo_options(bench_cmd)
@@ -305,7 +326,46 @@ def _cmd_bench(args: argparse.Namespace) -> int:
     return EXIT_OK
 
 
+def _cmd_ad(args: argparse.Namespace) -> int:
+    from archdiag.ad.pipeline import generate_ad
+
+    repo, out = _repo_and_out(args)
+    settings = _settings(args, repo)
+    notations = [n.strip() for n in args.notation.split(",") if n.strip()]
+    result = generate_ad(
+        repo,
+        out,
+        settings,
+        notations=notations,
+        client_factory=_client_factory(args, settings),
+        compile_db=args.compile_db,
+        progress=_progress,
+    )
+    for name, export in result.results.items():
+        for issue in export.issues:
+            where = f" ({issue.element})" if issue.element else ""
+            print(f"{name}: {issue.severity}: {issue.message}{where}")
+    for correspondence in result.ad.correspondences:
+        if correspondence.status == "violated":
+            print(f"correspondence {correspondence.rule_id}: {correspondence.detail}")
+    print(
+        f"{len(result.ad.views)} views, {result.errors} error(s), {result.warnings} "
+        f"warning(s); written to {result.out_dir}"
+    )
+    return EXIT_VIOLATIONS if args.strict and result.errors else EXIT_OK
+
+
+def _cmd_fetch_schemas(args: argparse.Namespace) -> int:
+    from archdiag.ad.export.archimate import fetch_schemas
+
+    for line in fetch_schemas(force=args.force):
+        print(line)
+    return EXIT_OK
+
+
 _COMMANDS: dict[str, Callable[[argparse.Namespace], int]] = {
+    "ad": _cmd_ad,
+    "fetch-schemas": _cmd_fetch_schemas,
     "analyze": _cmd_analyze,
     "check": _cmd_check,
     "serve": _cmd_serve,
