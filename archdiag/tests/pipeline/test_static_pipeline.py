@@ -162,3 +162,12 @@ def test_unavailable_llm_still_writes_static_diagrams(mini_repo: Path) -> None:
     run = json.loads((mini_repo / ".archdiag" / "run.json").read_text())
     assert run["annotated"] is False
     assert (mini_repo / ".archdiag" / "views" / "dependencies.mmd").is_file()
+
+
+def test_targets_without_own_components_are_not_containers(mini_repo: Path) -> None:
+    (mini_repo / "tests" / "CMakeLists.txt").write_text(
+        "add_executable(test_gpio test_gpio.c ../src/hal/gpio.c)\n"
+    )
+    model = analyze_static(mini_repo, mini_repo / ".archdiag", SETTINGS, {}).model
+    systems = [n.id for n in model.nodes if n.level == "system"]
+    assert systems == ["tgt_mini_ecu"]

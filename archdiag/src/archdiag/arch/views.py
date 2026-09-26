@@ -102,6 +102,9 @@ def build_views(components: Sequence[Component], agg: Aggregation, repo_name: st
         target_node.members = sorted(
             c for c, owner in component_targets.items() if owner == target_node.id
         )
+    # Targets whose code all belongs to an earlier target (typically test executables that
+    # compile application sources) add nothing to the system view.
+    target_nodes = [n for n in target_nodes if n.members] or target_nodes[:1]
     mapping = dict(component_targets)
     externals = [n for n in agg.nodes if n.level == "external"]
     external_weight: defaultdict[str, int] = defaultdict(int)
