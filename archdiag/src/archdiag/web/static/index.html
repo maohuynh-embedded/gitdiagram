@@ -1,0 +1,101 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>archdiag</title>
+  <link rel="stylesheet" href="/static/app.css">
+</head>
+<body>
+  <header class="bar">
+    <div class="brand">
+      <span class="logo" aria-hidden="true">◇</span>
+      <h1 id="title">archdiag</h1>
+      <span id="meta" class="meta"></span>
+    </div>
+    <div class="actions">
+      <label class="view-picker">
+        <span class="visually-hidden">View</span>
+        <select id="view-select" aria-label="View"></select>
+      </label>
+      <button id="btn-up" type="button" hidden title="Back to the parent view">↑ Up</button>
+      <button id="btn-ad" type="button" hidden title="ISO/IEC/IEEE 42010 architecture description">Architecture description</button>
+      <button id="btn-fit" type="button" title="Fit the diagram to the window">Fit</button>
+      <button id="btn-copy" type="button" title="Copy the Mermaid source">Copy Mermaid</button>
+      <button id="btn-svg" type="button">SVG</button>
+      <button id="btn-png" type="button">PNG</button>
+      <button id="btn-analyze" type="button" class="primary">Analyze again</button>
+    </div>
+  </header>
+  <p id="status" class="status" role="status" aria-live="polite" hidden></p>
+
+  <main class="layout">
+    <section id="canvas" class="canvas" aria-label="Architecture diagram">
+      <div id="viewport" class="viewport"></div>
+      <div id="empty" class="empty" hidden>
+        <h2>No analysis yet</h2>
+        <p>Run <code>archdiag analyze</code> in a terminal, or press <b>Analyze again</b>.</p>
+      </div>
+      <p id="view-description" class="view-description"></p>
+      <p class="hint">Scroll to zoom · drag to pan · click a component for details</p>
+    </section>
+
+    <section id="ad-page" class="ad-page" hidden aria-label="Architecture description">
+      <div class="ad-toolbar">
+        <button id="btn-ad-close" type="button">← Diagram</button>
+        <label>Files
+          <select id="ad-files" aria-label="Download a generated file"></select>
+        </label>
+        <button id="btn-ad-download" type="button">Download</button>
+      </div>
+      <article id="ad-doc" class="prose ad-doc"></article>
+    </section>
+
+    <aside class="side">
+      <section id="details" class="panel" hidden>
+        <div class="panel-head">
+          <h2 id="details-title"></h2>
+          <button id="details-close" type="button" class="icon" aria-label="Close details">×</button>
+        </div>
+        <p id="details-kind" class="kind"></p>
+        <p id="details-description"></p>
+        <ul id="details-responsibilities" class="bullets"></ul>
+        <p id="details-actions" class="row-actions"></p>
+        <h3>Code</h3>
+        <ul id="details-paths" class="paths"></ul>
+        <h3>Uses</h3>
+        <ul id="details-out" class="links"></ul>
+        <h3>Used by</h3>
+        <ul id="details-in" class="links"></ul>
+      </section>
+      <section id="violations-panel" class="panel" hidden>
+        <h2>Violations <span id="violations-count" class="count"></span></h2>
+        <ul id="violations" class="violations"></ul>
+      </section>
+      <section class="panel">
+        <h2>Explanation</h2>
+        <div id="explanation" class="prose"></div>
+      </section>
+      <section id="warnings-panel" class="panel" hidden>
+        <h2>Warnings</h2>
+        <ul id="warnings" class="warnings"></ul>
+      </section>
+    </aside>
+  </main>
+
+  <dialog id="viewer" class="viewer">
+    <div class="panel-head">
+      <code id="viewer-path"></code>
+      <span>
+        <a id="viewer-open" href="#">Open in VS Code</a>
+        <button id="viewer-close" type="button" class="icon" aria-label="Close preview">×</button>
+      </span>
+    </div>
+    <pre id="viewer-text"></pre>
+  </dialog>
+
+  <script src="/static/vendor/purify.min.js"></script>
+  <script src="/static/vendor/mermaid.min.js"></script>
+  <script type="module" src="/static/app.js"></script>
+</body>
+</html>

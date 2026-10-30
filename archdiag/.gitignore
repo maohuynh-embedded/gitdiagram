@@ -1,0 +1,9 @@
+.venv/
+*.egg-info/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+__pycache__/
+.archdiag/
+# Expected answers for private reference projects are never committed.
+benchmarks/private/

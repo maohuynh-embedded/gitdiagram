@@ -1,0 +1,8 @@
+[[safety.components]]
+name = "swc/speed"
+asil = "A"
+safety_goals = ["SG-1"]
+
+[requirements.csv]
+path = "req/requirements.csv"
+component_field = "component"

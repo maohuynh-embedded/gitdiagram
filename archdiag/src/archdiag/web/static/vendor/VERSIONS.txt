@@ -1,0 +1,3 @@
+mermaid 11.17.2  dist/mermaid.min.js  sha256 581ed7d74bd9048d0e3a91363927d72ef22942d7722546b27f7cc29e35390eb8
+dompurify 3.4.16  dist/purify.min.js  sha256 2c90a9b46d6463f26038a29b686e82bc91de01fdac9d5229e7cfe3b360134ea2
+Source: https://cdn.jsdelivr.net/npm/<package>@<version>/<path> (npm registry mirror)

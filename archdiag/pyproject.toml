@@ -1,0 +1,60 @@
+[build-system]
+requires = ["setuptools>=75"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "archdiag"
+version = "0.1.0"
+description = "Local, standards-aware architecture diagrams for embedded C/C++ repositories"
+readme = "README.md"
+requires-python = ">=3.12"
+license = { text = "MIT" }
+dependencies = [
+  "pydantic>=2.12,<3",
+  "httpx>=0.28,<1",
+  "pathspec>=0.12",
+  "fastapi>=0.115",
+  "uvicorn>=0.32",
+  # 0.26.0 corrupts memory on CPython 3.14 (crashes seen on real code); keep 0.25 until fixed.
+  "tree-sitter>=0.25.2,<0.26",
+  "tree-sitter-c>=0.24",
+  "tree-sitter-cpp>=0.23",
+]
+
+[project.optional-dependencies]
+clang = ["libclang>=18"]
+validate = ["lxml>=5"]
+
+dev = ["pytest>=8", "ruff>=0.8", "mypy>=1.13"]
+
+[project.scripts]
+archdiag = "archdiag.cli:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.setuptools.package-data]
+archdiag = ["web/static/*", "web/static/vendor/*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+markers = ["live: needs a running local LLM (deselected by default)"]
+addopts = "-m 'not live'"
+filterwarnings = ["ignore:Using `httpx` with `starlette.testclient`"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py312"
+extend-exclude = ["tests/fixtures"]
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "B", "UP", "SIM"]
+
+[tool.mypy]
+strict = true
+python_version = "3.12"
+files = ["src"]
+
+[[tool.mypy.overrides]]
+module = ["clang", "clang.*", "lxml", "lxml.*"]
+ignore_missing_imports = true

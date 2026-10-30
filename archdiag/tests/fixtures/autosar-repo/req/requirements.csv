@@ -1,0 +1,4 @@
+id,text,asil,component
+SW-REQ-1,Measure wheel speed every 10 ms,B,swc/speed
+SW-REQ-2,Control brake pressure from wheel speed,D,
+SW-REQ-3,Log diagnostic events,QM,
