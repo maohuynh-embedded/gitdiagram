@@ -1,6 +1,12 @@
 "use client";
 
-import { useCallback, useEffect, useRef, useState } from "react";
+import {
+  useCallback,
+  useEffect,
+  useEffectEvent,
+  useRef,
+  useState,
+} from "react";
 import {
   CircleAlert,
   Captions,
@@ -16,6 +22,10 @@ import { ExplainerAudio, type SfxCue } from "~/features/explainer/audio-mixer";
 import { ActivityMark } from "~/components/generation/activity-mark";
 import { STAGE_PATH } from "~/features/explainer/engine";
 import type { VideoArtifact } from "~/features/explainer/types";
+import {
+  captureVideoEvent,
+  WatchTracker,
+} from "~/features/explainer/watch-analytics";
 import styles from "./explainer-video.module.css";
 
 type StageMessage =
@@ -30,6 +40,8 @@ const SPEEDS = [1, 1.25, 1.5, 2, 0.75];
 // Pressing and holding either side of the picture plays at this speed.
 const HOLD_SPEED = 2;
 const HOLD_DELAY_MS = 300;
+// Arrow keys on the seek bar move this far.
+const SEEK_STEP_SECONDS = 5;
 
 const formatTime = (seconds: number) => {
   const whole = Math.max(0, Math.floor(seconds));
@@ -37,25 +49,71 @@ const formatTime = (seconds: number) => {
 };
 
 /**
- * Plays an explainer live: the scene engine runs in a sandboxed same-origin
- * frame, the audio mixes in this page, and every frame seeks the scene
- * timeline to the audio clock so picture and sound cannot drift.
+ * Makes everything on the page but `element` inert (no focus, no clicks,
+ * hidden from assistive technology); returns the undo.
  */
-export function ExplainerPlayer({ artifact }: { artifact: VideoArtifact }) {
+function inertAround(element: HTMLElement): () => void {
+  const changed: Element[] = [];
+  for (
+    let node: Element = element;
+    node.parentElement && node !== document.body;
+    node = node.parentElement
+  )
+    for (const sibling of node.parentElement.children)
+      if (sibling !== node && !sibling.hasAttribute("inert")) {
+        sibling.setAttribute("inert", "");
+        changed.push(sibling);
+      }
+  return () => {
+    for (const sibling of changed) sibling.removeAttribute("inert");
+  };
+}
+
+// Preferences are best effort: storage can be blocked (private modes, strict
+// cookie settings), and the player works the same without it.
+function readCaptionsPreference(): boolean {
+  try {
+    return window.localStorage.getItem(CAPTIONS_KEY) !== "0";
+  } catch {
+    return true;
+  }
+}
+
+function saveCaptionsPreference(on: boolean) {
+  try {
+    window.localStorage.setItem(CAPTIONS_KEY, on ? "1" : "0");
+  } catch {
+    // Not remembered; this visit still uses the choice.
+  }
+}
+
+/**
+ * Plays an explainer live: the scene engine runs in a same-origin frame (not
+ * sandboxed; its own strict CSP is the boundary for model-written text), the
+ * audio mixes in this page, and every frame seeks the scene timeline to the
+ * audio clock so picture and sound cannot drift.
+ */
+export function ExplainerPlayer({
+  artifact,
+  onTime,
+}: {
+  artifact: VideoArtifact;
+  /** Told the time on screen whenever it moves (feedback reads it). */
+  onTime?: (time: number) => void;
+}) {
   const shell = useRef<HTMLDivElement>(null);
   const frame = useRef<HTMLIFrameElement>(null);
   const audio = useRef<ExplainerAudio | null>(null);
   const scrubber = useRef<HTMLInputElement>(null);
   const clock = useRef<HTMLSpanElement>(null);
+  const shownTime = useRef("0:00");
   const [ready, setReady] = useState(false);
   const [playing, setPlaying] = useState(false);
   const [ended, setEnded] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [attempt, setAttempt] = useState(0);
   // Captions start on; only a visitor's own "off" choice is remembered.
-  const [captions, setCaptions] = useState(
-    () => window.localStorage.getItem(CAPTIONS_KEY) !== "0",
-  );
+  const [captions, setCaptions] = useState(readCaptionsPreference);
   // iPhone Safari cannot put an element in fullscreen; fill the window instead.
   const [expanded, setExpanded] = useState(false);
   const [fullscreen, setFullscreen] = useState(false);
@@ -66,29 +124,69 @@ export function ExplainerPlayer({ artifact }: { artifact: VideoArtifact }) {
   const held = useRef(false);
   const captionsRef = useRef(captions);
   const duration = artifact.timing.DURATION;
+  const createdAt = artifact.createdAt;
+  const totalTime = formatTime(duration);
+  // How much of this video has been watched, for analytics; a new video
+  // starts over.
+  const tracker = useRef<{ createdAt: string; watch: WatchTracker } | null>(
+    null,
+  );
+  const watch = useCallback(() => {
+    if (tracker.current?.createdAt !== createdAt)
+      tracker.current = {
+        createdAt,
+        watch: new WatchTracker(duration, (event, extra) =>
+          captureVideoEvent(event, artifact, extra),
+        ),
+      };
+    return tracker.current.watch;
+  }, [artifact, createdAt, duration]);
 
-  const seekStage = useCallback((time: number) => {
-    frame.current?.contentWindow?.postMessage(
-      { type: "seek", time },
-      window.location.origin,
+  const seekStage = useCallback(
+    (time: number) => {
+      frame.current?.contentWindow?.postMessage(
+        { type: "seek", time },
+        window.location.origin,
+      );
+      if (scrubber.current) scrubber.current.value = String(time);
+      onTime?.(time);
+      // Runs every frame; the clock text only changes once a second.
+      const shown = formatTime(time);
+      if (clock.current && shown !== shownTime.current) {
+        shownTime.current = shown;
+        clock.current.textContent = shown;
+        scrubber.current?.setAttribute(
+          "aria-valuetext",
+          `${shown} of ${totalTime}`,
+        );
+      }
+    },
+    [onTime, totalTime],
+  );
+
+  useEffect(() => {
+    scrubber.current?.setAttribute(
+      "aria-valuetext",
+      `${shownTime.current} of ${totalTime}`,
     );
-    if (scrubber.current) scrubber.current.value = String(time);
-    if (clock.current) clock.current.textContent = formatTime(time);
-  }, []);
+  }, [totalTime]);
 
-  // Full window: the page behind must not scroll, and Escape leaves.
+  // Full window: the page behind must not scroll or take focus, and Escape
+  // leaves.
   useEffect(() => {
     if (!expanded) return;
     const element = shell.current;
     const root = document.documentElement;
     const overflow = root.style.overflow;
     root.style.overflow = "hidden";
+    const restoreInert = element ? inertAround(element) : () => undefined;
     const onKey = (event: KeyboardEvent) => {
       if (event.key === "Escape") setExpanded(false);
     };
     window.addEventListener("keydown", onKey);
     return () => {
       root.style.overflow = overflow;
+      restoreInert();
       window.removeEventListener("keydown", onKey);
       // Safari tints its status bar and toolbar from the full-window player
       // and keeps that black after it shrinks back, until the element leaves
@@ -114,13 +212,25 @@ export function ExplainerPlayer({ artifact }: { artifact: VideoArtifact }) {
     return () => document.removeEventListener("fullscreenchange", onChange);
   }, []);
 
+  const currentArtifact = useEffectEvent(() => artifact);
+
   // Hand the plan to the stage, then load the audio the stage says it needs.
+  // Keyed like the frame (the video's createdAt and the attempt), so this
+  // only starts over when the frame does and sends stage-ready again.
   useEffect(() => {
+    const artifact = currentArtifact();
     let cancelled = false;
-    // Never spin forever: a stage that neither loads nor reports an error fails.
-    const timeout = window.setTimeout(() => {
-      if (!cancelled) setError("The video took too long to load.");
-    }, STAGE_TIMEOUT_MS);
+    // Never spin forever: a stage that neither loads nor reports an error
+    // fails. The narration download gets its own allowance once the stage is
+    // ready, and a load that finishes late still clears the message.
+    let timeout = 0;
+    const wait = (message: string) => {
+      window.clearTimeout(timeout);
+      timeout = window.setTimeout(() => {
+        if (!cancelled) setError(message);
+      }, STAGE_TIMEOUT_MS);
+    };
+    wait("The video took too long to load.");
     const onMessage = (event: MessageEvent<StageMessage>) => {
       if (
         event.origin !== window.location.origin ||
@@ -140,6 +250,11 @@ export function ExplainerPlayer({ artifact }: { artifact: VideoArtifact }) {
           window.location.origin,
         );
       } else if (message.type === "ready") {
+        // A captions toggle pressed while the stage was building.
+        frame.current?.contentWindow?.postMessage(
+          { type: "captions", on: captionsRef.current },
+          window.location.origin,
+        );
         // Poster: show the finished opening scene until the viewer presses play.
         frame.current?.contentWindow?.postMessage(
           {
@@ -148,13 +263,22 @@ export function ExplainerPlayer({ artifact }: { artifact: VideoArtifact }) {
           },
           window.location.origin,
         );
-        const mixer = new ExplainerAudio(artifact, message.sfx);
+        const mixer = new ExplainerAudio(artifact, message.sfx, HOLD_SPEED);
+        // A call or an app switch stopped the sound: show the video paused.
+        mixer.onInterrupted = () => {
+          if (cancelled) return;
+          tracker.current?.watch.pause();
+          setPlaying(false);
+        };
         audio.current = mixer;
+        wait("The narration took too long to load.");
         mixer
           .load()
           .then(() => {
             window.clearTimeout(timeout);
-            if (!cancelled) setReady(true);
+            if (cancelled) return;
+            setError(null);
+            setReady(true);
           })
           .catch(() => {
             window.clearTimeout(timeout);
@@ -174,22 +298,15 @@ export function ExplainerPlayer({ artifact }: { artifact: VideoArtifact }) {
       audio.current?.dispose();
       audio.current = null;
     };
-  }, [artifact, attempt]);
+  }, [createdAt, attempt]);
 
   const rate = holding && playing ? HOLD_SPEED : speed;
   useEffect(() => {
-    if (ready) void audio.current?.setRate(rate);
+    if (ready)
+      audio.current?.setRate(rate).catch((error: unknown) => {
+        console.error("Explainer speed change failed", error);
+      });
   }, [rate, ready]);
-
-  // Stretch the narration for a held press ahead of time, so it starts at once.
-  useEffect(() => {
-    if (!ready) return;
-    const id = window.setTimeout(
-      () => void audio.current?.prepare(HOLD_SPEED),
-      500,
-    );
-    return () => window.clearTimeout(id);
-  }, [ready]);
 
   // While playing, every frame seeks the stage to the audio clock.
   useEffect(() => {
@@ -199,7 +316,9 @@ export function ExplainerPlayer({ artifact }: { artifact: VideoArtifact }) {
       const mixer = audio.current;
       if (!mixer?.isPlaying) return;
       const time = mixer.currentTime();
+      watch().frame(Math.min(time, duration));
       if (time >= duration) {
+        watch().pause();
         mixer.pause();
         seekStage(duration);
         setPlaying(false);
@@ -211,23 +330,33 @@ export function ExplainerPlayer({ artifact }: { artifact: VideoArtifact }) {
     };
     frameId = requestAnimationFrame(loop);
     return () => cancelAnimationFrame(frameId);
-  }, [playing, duration, seekStage]);
+  }, [playing, duration, seekStage, watch]);
 
   const play = useCallback(
     async (from?: number) => {
       const mixer = audio.current;
       if (!mixer || !ready) return;
-      await mixer.play(from ?? (ended ? 0 : mixer.currentTime()));
+      let started = false;
+      try {
+        started = await mixer.play(from ?? (ended ? 0 : mixer.currentTime()));
+      } catch (error) {
+        // The browser would not start the sound; the video stays paused.
+        console.error("Explainer audio could not start", error);
+      }
+      // A pause, seek or newer play took over while this one waited.
+      if (!started || audio.current !== mixer) return;
       setEnded(false);
       setPlaying(true);
+      watch().play(mixer.currentTime());
     },
-    [ended, ready],
+    [ended, ready, watch],
   );
 
   const pause = useCallback(() => {
     audio.current?.pause();
+    watch().pause();
     setPlaying(false);
-  }, []);
+  }, [watch]);
 
   const toggle = () => (playing ? pause() : void play());
 
@@ -239,6 +368,9 @@ export function ExplainerPlayer({ artifact }: { artifact: VideoArtifact }) {
     const side =
       event.target instanceof HTMLElement ? event.target.dataset.side : null;
     if (!playing || !side || !event.isPrimary || event.button !== 0) return;
+    // Stretch the narration for a hold now, so a hold starts at once. Only
+    // viewers who might hold pay for it (a phone's CPU and memory).
+    audio.current?.prewarm(HOLD_SPEED);
     window.clearTimeout(holdTimer.current);
     holdTimer.current = window.setTimeout(() => {
       held.current = true;
@@ -251,16 +383,20 @@ export function ExplainerPlayer({ artifact }: { artifact: VideoArtifact }) {
     setHolding(false);
   };
 
-  const onSurfaceClick = () => {
-    if (held.current) held.current = false;
-    else toggle();
+  const onSurfaceClick = (event: React.MouseEvent) => {
+    const afterHold = held.current;
+    held.current = false;
+    // Only the pointer's own click ends a hold; Enter or Space (a click with
+    // no detail) always toggles, even after a hold released off the player.
+    if (afterHold && event.detail !== 0) return;
+    toggle();
   };
 
   const toggleCaptions = () => {
     const next = !captions;
     captionsRef.current = next;
     setCaptions(next);
-    window.localStorage.setItem(CAPTIONS_KEY, next ? "1" : "0");
+    saveCaptionsPreference(next);
     frame.current?.contentWindow?.postMessage(
       { type: "captions", on: next },
       window.location.origin,
@@ -290,11 +426,31 @@ export function ExplainerPlayer({ artifact }: { artifact: VideoArtifact }) {
     const mixer = audio.current;
     if (!mixer) return;
     setEnded(false);
+    // A jump is not watching; playing resumes the count from the new time.
+    watch().pause();
     if (mixer.isPlaying) void play(time);
     else {
       mixer.seek(time);
       seekStage(time);
     }
+  };
+
+  // Arrow keys move a few seconds, not a range input's tiny step.
+  const onScrubberKey = (event: React.KeyboardEvent<HTMLInputElement>) => {
+    const now = Number(event.currentTarget.value);
+    const to =
+      event.key === "ArrowLeft" || event.key === "ArrowDown"
+        ? now - SEEK_STEP_SECONDS
+        : event.key === "ArrowRight" || event.key === "ArrowUp"
+          ? now + SEEK_STEP_SECONDS
+          : event.key === "Home"
+            ? 0
+            : event.key === "End"
+              ? duration
+              : null;
+    if (to === null) return;
+    event.preventDefault();
+    scrub(Math.min(duration, Math.max(0, to)));
   };
 
   return (
@@ -305,7 +461,7 @@ export function ExplainerPlayer({ artifact }: { artifact: VideoArtifact }) {
     >
       <div className={styles.player}>
         <iframe
-          key={attempt}
+          key={`${createdAt}:${attempt}`}
           ref={frame}
           className={styles.stage}
           src={STAGE_PATH}
@@ -390,10 +546,11 @@ export function ExplainerPlayer({ artifact }: { artifact: VideoArtifact }) {
           disabled={!ready}
           aria-label="Seek"
           onChange={(event) => scrub(Number(event.target.value))}
+          onKeyDown={onScrubberKey}
         />
         <span className={styles.time}>
           <span ref={clock}>0:00</span>
-          <span className={styles.total}>{` / ${formatTime(duration)}`}</span>
+          <span className={styles.total}>{` / ${totalTime}`}</span>
         </span>
         <button
           type="button"

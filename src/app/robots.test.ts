@@ -1,0 +1,140 @@
+import { beforeEach, describe, expect, it, vi } from "vitest";
+import type * as Sitemaps from "~/lib/sitemaps";
+
+const store = vi.hoisted(() => ({
+  browse: [] as Array<{
+    username: string;
+    repo: string;
+    lastSuccessfulAt: string;
+  }>,
+  videos: [] as Array<{ owner: string; repo: string; createdAt?: string }>,
+  videosOn: true,
+  wholeIndexReads: 0,
+}));
+
+vi.mock("next/cache", () => ({
+  unstable_cache: (read: () => Promise<unknown>) => read,
+}));
+vi.mock("~/server/browse-index-cache", () => ({
+  getCachedBrowseIndex: async () => {
+    store.wholeIndexReads += 1;
+    return store.browse;
+  },
+  getCachedBrowseIndexTotal: async () => store.browse.length,
+}));
+vi.mock("~/server/explainer/config", () => ({
+  isVideoExplainerEnabled: () => store.videosOn,
+}));
+vi.mock("~/server/explainer/catalog", () => ({
+  listVideoCards: async () => store.videos,
+}));
+vi.mock("~/lib/sitemaps", async (importOriginal) => ({
+  ...(await importOriginal<typeof Sitemaps>()),
+  // Small pages make the shard arithmetic visible.
+  SITEMAP_PAGE_SIZE: 10,
+  getSitemapCount: (routeCount: number, fixedRouteCount: number) =>
+    Math.max(1, Math.ceil((routeCount + fixedRouteCount) / 10)),
+}));
+
+import robots from "./robots";
+import sitemap, { generateSitemaps } from "./sitemap";
+
+const entry = (index: number) => ({
+  username: "acme",
+  repo: `repo-${index}`,
+  lastSuccessfulAt: "2026-09-01T00:00:00.000Z",
+});
+
+beforeEach(() => {
+  store.browse = [];
+  store.videos = [];
+  store.videosOn = true;
+  store.wholeIndexReads = 0;
+});
+
+describe("robots.txt", () => {
+  it("lets link-preview crawlers fetch video posters under /api", async () => {
+    const [everyone] = (await robots()).rules as Array<{
+      allow: string[];
+      disallow: string[];
+    }>;
+    expect(everyone!.disallow).toContain("/api/");
+    expect(everyone!.allow).toContain("/api/video/file");
+  });
+
+  it("names the AI search and assistant crawlers with the same rules", async () => {
+    const [everyone, ai, bulk] = (await robots()).rules as Array<{
+      userAgent: string | string[];
+      allow: string | string[];
+      disallow: string[];
+    }>;
+    expect(ai!.userAgent).toEqual(
+      expect.arrayContaining([
+        "OAI-SearchBot",
+        "ChatGPT-User",
+        "GPTBot",
+        "ClaudeBot",
+        "Claude-SearchBot",
+        "Claude-User",
+        "PerplexityBot",
+        "Perplexity-User",
+        "Google-Extended",
+        "Applebot-Extended",
+        "bingbot",
+      ]),
+    );
+    // Pages, /llms.txt and /{owner}/{repo}.md are all under "/".
+    expect(ai!.allow).toEqual(everyone!.allow);
+    expect(ai!.disallow).toEqual(everyone!.disallow);
+    // The bulk crawlers stay off repository pages.
+    expect(bulk!.userAgent).toEqual(["Amazonbot", "Brightbot"]);
+    expect(bulk!.disallow).toContain("/*/*");
+  });
+
+  it("lists every sitemap shard, video pages included", async () => {
+    store.browse = Array.from({ length: 5 }, (_, index) => entry(index));
+    store.videos = Array.from({ length: 5 }, (_, index) => ({
+      owner: "acme",
+      repo: `video-${index}`,
+    }));
+    const shards = await generateSitemaps();
+    expect(shards).toHaveLength(2);
+    expect((await robots()).sitemap).toEqual([
+      "https://gitdiagram.com/sitemap/0.xml",
+      "https://gitdiagram.com/sitemap/1.xml",
+    ]);
+  });
+
+  it("never reads the whole browse index", async () => {
+    // It renders on the placed server, which the whole index can kill.
+    // 25 repositories and the six fixed pages make four pages of ten.
+    store.browse = Array.from({ length: 25 }, (_, index) => entry(index));
+    expect((await robots()).sitemap).toHaveLength(4);
+    expect(store.wholeIndexReads).toBe(0);
+  });
+
+  it("does not list an empty shard when videos are off", async () => {
+    // Four fixed pages and six repositories fill exactly one page of ten.
+    store.videosOn = false;
+    store.browse = Array.from({ length: 6 }, (_, index) => entry(index));
+    expect(await generateSitemaps()).toHaveLength(1);
+    store.videosOn = true;
+    expect(await generateSitemaps()).toHaveLength(2);
+  });
+});
+
+describe("sitemap", () => {
+  it("lists the video gallery with the fixed pages while videos are on", async () => {
+    const urls = (await sitemap({ id: Promise.resolve("0") })).map(
+      (route) => route.url,
+    );
+    expect(urls).toContain("https://gitdiagram.com/videos");
+    expect(urls).toContain("https://gitdiagram.com/visualize-codebase");
+
+    store.videosOn = false;
+    const without = (await sitemap({ id: Promise.resolve("0") })).map(
+      (route) => route.url,
+    );
+    expect(without).not.toContain("https://gitdiagram.com/videos");
+  });
+});

@@ -5,6 +5,9 @@ interface GitHubRepoResponse {
   default_branch?: string;
   private?: boolean;
   stargazers_count?: number;
+  description?: string | null;
+  language?: string | null;
+  topics?: unknown;
 }
 
 interface GitHubTreeItem {
@@ -39,38 +42,48 @@ export interface GithubData {
   /** Metadata/tree were authorized as public after a stale caller token failed. */
   usedPublicFallback?: boolean;
   stargazerCount: number | null;
+  /** Display metadata from the same repository read; absent when unset. */
+  description?: string;
+  language?: string;
+  topics?: string[];
   pathTypes: ReadonlyMap<string, RepositoryPathType>;
   sourceBlobs?: ReadonlyMap<string, SourceBlob>;
+  /** GitHub listed only part of the tree (over 100,000 entries or 7 MB). */
+  treeTruncated?: boolean;
 }
 
 export type RepositoryPathType = "blob" | "tree";
 
 export const REPOSITORY_TOO_LARGE_ERROR =
-  "Repository is too large (>195k tokens) for analysis. Try a smaller repo.";
+  "Repository is too large for analysis. Try a smaller repo.";
 // Messages this module authors itself. They describe the caller's own request
 // and carry no upstream response text, so `normalizeGenerationError` is willing
 // to show them verbatim.
 const GITHUB_REQUEST_TIMEOUT_ERROR = "GitHub request timed out. Please retry.";
 export const REPOSITORY_NOT_FOUND_ERROR = "Repository not found.";
 const FILE_TREE_UNAVAILABLE_ERROR = "Could not fetch repository file tree.";
-const EMPTY_REPOSITORY_ERROR =
+export const EMPTY_REPOSITORY_ERROR =
   "Could not fetch repository file tree. Repository might be empty or inaccessible.";
 function buildGithubRequestFailedError(status: number): string {
   return `GitHub request failed (${status}). Please retry.`;
 }
-const PRIVATE_REPOSITORY_AUTH_REQUIRED_ERROR =
+export const PRIVATE_REPOSITORY_AUTH_REQUIRED_ERROR =
   "A GitHub token is required to analyze a private repository.";
-export const MAX_INCLUDED_FILE_TREE_CHARACTERS = 780_000;
 export const MAX_README_BYTES = 750_000;
 export const GITHUB_REQUEST_TIMEOUT_MS = 30_000;
 const MAX_PUBLIC_TREE_CACHE_ENTRIES = 8;
 const MAX_PUBLIC_TREE_CACHE_CHARACTERS = 4_000_000;
+// A partial listing can leave whole top-level folders out. Each missing one
+// costs a small non-recursive request, so only this many are filled in.
+const MAX_MISSING_TOP_LEVEL_FETCHES = 8;
+const GIT_SHA = /^[a-f0-9]{40,64}$/;
 
 interface PublicTreeCacheEntry {
   etag: string;
   fileTree: string;
   pathTypes: ReadonlyMap<string, RepositoryPathType>;
   sourceBlobs?: ReadonlyMap<string, SourceBlob>;
+  treeTruncated: boolean;
   characters: number;
 }
 
@@ -241,11 +254,17 @@ async function getRepoMetadata(
   repo: string,
   headers: HeadersInit,
   signal?: AbortSignal,
-): Promise<{
-  defaultBranch: string;
-  isPrivate: boolean;
-  stargazerCount: number | null;
-}> {
+): Promise<
+  Pick<
+    GithubData,
+    | "defaultBranch"
+    | "isPrivate"
+    | "stargazerCount"
+    | "description"
+    | "language"
+    | "topics"
+  >
+> {
   const data = await fetchJson<GitHubRepoResponse>(
     `https://api.github.com/repos/${username}/${repo}`,
     headers,
@@ -258,7 +277,75 @@ async function getRepoMetadata(
     isPrivate: Boolean(data.private),
     stargazerCount:
       typeof data.stargazers_count === "number" ? data.stargazers_count : null,
+    description: data.description || undefined,
+    language: data.language || undefined,
+    topics: Array.isArray(data.topics)
+      ? data.topics.filter((topic) => typeof topic === "string")
+      : undefined,
   };
+}
+
+/**
+ * Top-level entries a partial recursive listing left out, and one level of
+ * each top-level folder it has nothing under, read non-recursively. Best
+ * effort: a failed read only leaves the listing as GitHub returned it.
+ */
+async function getMissingTopLevelEntries(
+  username: string,
+  repo: string,
+  branch: string,
+  listed: readonly GitHubTreeItem[],
+  headers: HeadersInit,
+  signal?: AbortSignal,
+): Promise<GitHubTreeItem[]> {
+  const readTree = async (treeish: string) =>
+    (
+      await fetchJson<GitHubTreeResponse>(
+        `https://api.github.com/repos/${username}/${repo}/git/trees/${encodeURIComponent(treeish)}`,
+        headers,
+        FILE_TREE_UNAVAILABLE_ERROR,
+        signal,
+      )
+    ).tree ?? [];
+  try {
+    const paths = new Set<string>();
+    const coveredFolders = new Set<string>();
+    for (const item of listed) {
+      if (typeof item.path !== "string") continue;
+      paths.add(item.path);
+      const slash = item.path.indexOf("/");
+      if (slash > 0) coveredFolders.add(item.path.slice(0, slash));
+    }
+    const root = await readTree(branch);
+    const missingFolders = root
+      .filter(
+        (item): item is GitHubTreeItem & { path: string; sha: string } =>
+          item.type === "tree" &&
+          typeof item.path === "string" &&
+          typeof item.sha === "string" &&
+          GIT_SHA.test(item.sha) &&
+          !coveredFolders.has(item.path),
+      )
+      .slice(0, MAX_MISSING_TOP_LEVEL_FETCHES);
+    const children = await Promise.all(
+      missingFolders.map(async (folder) =>
+        (await readTree(folder.sha).catch(() => [])).flatMap((item) =>
+          typeof item.path === "string"
+            ? [{ ...item, path: `${folder.path}/${item.path}` }]
+            : [],
+        ),
+      ),
+    );
+    return [
+      ...root.filter(
+        (item) => typeof item.path === "string" && !paths.has(item.path),
+      ),
+      ...children.flat().filter((item) => !paths.has(item.path)),
+    ];
+  } catch (error) {
+    if (signal?.aborted) throw error;
+    return [];
+  }
 }
 
 async function getFileTree(
@@ -272,6 +359,7 @@ async function getFileTree(
   fileTree: string;
   pathTypes: ReadonlyMap<string, RepositoryPathType>;
   sourceBlobs?: ReadonlyMap<string, SourceBlob>;
+  treeTruncated: boolean;
 }> {
   // Branch names may contain URL-significant characters ("#", "?", …).
   // encodeURIComponent also encodes "/" as %2F, which the trees API accepts
@@ -297,6 +385,7 @@ async function getFileTree(
       fileTree: cached.fileTree,
       pathTypes: cached.pathTypes,
       sourceBlobs: cached.sourceBlobs,
+      treeTruncated: cached.treeTruncated,
     };
   }
   if (result.notModified) {
@@ -304,14 +393,39 @@ async function getFileTree(
   }
   const data = result.value;
 
-  if (data.truncated === true) {
-    throw new Error(REPOSITORY_TOO_LARGE_ERROR);
+  // GitHub returns a partial listing above 100,000 entries or 7 MB. The model
+  // only sees a bounded excerpt of the tree anyway, so a partial listing still
+  // makes a diagram; links to paths it omits are dropped during validation.
+  // Top-level folders it left out entirely are read one level deep, so no
+  // subsystem is missing from the excerpt, and the truncation is reported.
+  const treeTruncated = data.truncated === true;
+  const listed = data.tree ?? [];
+  const items = treeTruncated
+    ? [
+        ...listed,
+        ...(await getMissingTopLevelEntries(
+          username,
+          repo,
+          branch,
+          listed,
+          headers,
+          signal,
+        )),
+      ]
+    : listed;
+  if (treeTruncated) {
+    console.info(
+      JSON.stringify({
+        event: "generate.github.tree_truncated",
+        listed_entries: listed.length,
+        added_entries: items.length - listed.length,
+      }),
+    );
   }
-
   const paths: string[] = [];
   const pathTypes = new Map<string, RepositoryPathType>();
   const sourceBlobs = new Map<string, SourceBlob>();
-  for (const item of data.tree ?? []) {
+  for (const item of items) {
     if (typeof item.path === "string" && shouldIncludeFile(item.path)) {
       paths.push(item.path);
       if (item.type === "blob" || item.type === "tree") {
@@ -320,7 +434,7 @@ async function getFileTree(
           item.type === "blob" &&
           (item.mode === "100644" || item.mode === "100755") &&
           typeof item.sha === "string" &&
-          /^[a-f0-9]{40,64}$/.test(item.sha) &&
+          GIT_SHA.test(item.sha) &&
           typeof item.size === "number" &&
           item.size >= 0
         ) {
@@ -335,13 +449,10 @@ async function getFileTree(
   }
 
   const fileTree = paths.join("\n");
-  if (fileTree.length > MAX_INCLUDED_FILE_TREE_CHARACTERS) {
-    throw new Error(REPOSITORY_TOO_LARGE_ERROR);
-  }
 
   if (usePublicConditionalCache) {
     deletePublicTreeCacheEntry(url);
-    if (result.etag) {
+    if (result.etag && fileTree.length <= MAX_PUBLIC_TREE_CACHE_CHARACTERS) {
       while (
         publicTreeCache.size >= MAX_PUBLIC_TREE_CACHE_ENTRIES ||
         publicTreeCacheCharacters + fileTree.length >
@@ -358,13 +469,14 @@ async function getFileTree(
         fileTree,
         pathTypes,
         sourceBlobs,
+        treeTruncated,
         characters: fileTree.length,
       });
       publicTreeCacheCharacters += fileTree.length;
     }
   }
 
-  return { fileTree, pathTypes, sourceBlobs };
+  return { fileTree, pathTypes, sourceBlobs, treeTruncated };
 }
 
 class MissingReadmeError extends Error {}
@@ -428,12 +540,8 @@ async function fetchGithubData(
 ): Promise<GithubData> {
   const hasCallerGithubPat = Boolean(githubPat?.trim());
   const headers = await getGitHubApiHeaders({ githubPat });
-  const { defaultBranch, isPrivate, stargazerCount } = await getRepoMetadata(
-    username,
-    repo,
-    headers,
-    signal,
-  );
+  const metadata = await getRepoMetadata(username, repo, headers, signal);
+  const { defaultBranch, isPrivate } = metadata;
 
   // GitHub App installation tokens and the server PAT pool may be able to read
   // private repositories. They improve public API rate limits, but they must
@@ -463,13 +571,12 @@ async function fetchGithubData(
   }
 
   return {
-    defaultBranch,
+    ...metadata,
     fileTree: tree.fileTree,
     readme: readmeResult.ok ? readmeResult.value : "",
-    isPrivate,
-    stargazerCount,
     pathTypes: tree.pathTypes,
     sourceBlobs: tree.sourceBlobs,
+    treeTruncated: tree.treeTruncated,
   };
 }
 

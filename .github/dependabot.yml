@@ -25,6 +25,30 @@ updates:
       - dependency-name: "typescript"
         update-types:
           - "version-update:semver-major"
+      # puppeteer-core must target the Chromium the render container
+      # installs (Debian's, see Dockerfile), so it is bumped by hand.
+      - dependency-name: "puppeteer-core"
+
+  - package-ecosystem: "bun"
+    directory: "/workers/presence"
+    patterns:
+      - "*"
+    multi-ecosystem-group: "all-dependencies"
+    cooldown:
+      default-days: 3
+    ignore:
+      # @cloudflare/vitest-plugin supports Vitest 4 only; move with it.
+      - dependency-name: "vitest"
+        update-types:
+          - "version-update:semver-major"
+
+  - package-ecosystem: "bun"
+    directory: "/workers/render"
+    patterns:
+      - "*"
+    multi-ecosystem-group: "all-dependencies"
+    cooldown:
+      default-days: 3
 
   - package-ecosystem: "github-actions"
     directory: "/"

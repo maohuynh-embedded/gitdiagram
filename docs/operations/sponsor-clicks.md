@@ -1,5 +1,58 @@
 # Sponsor campaign reporting and scheduling
 
+## Temporal
+
+Two bookings from Temporal Technologies, Inc. (Teresa Czornyj, with Mike
+Partin), agreed October 20, 2026 and billed together on Stripe invoice
+NIKTVZPC-0001 (US$4,498, due November 6; their accounts team pays by bank
+transfer). `temporal-2026-12` is the other shared website spot beside Sentry,
+`2026-12-19T05:00:00Z` to `2027-01-18T05:00:00Z` ($999), rotating 50/50 with
+it. `temporal-2027-01` is the exclusive campaign right after (website and
+GitHub README, no Markdown line), to `2027-02-17T05:00:00Z` ($3,499). Clicks go
+to `https://temporal.io/` with the site's default UTM tags
+(`utm_campaign=temporal_30_days` and `temporal_exclusive_30_days`) until
+Temporal sends its own link and button text. The line, button and horizontal
+wordmark are the ones previewed to them on October 19. If the invoice is not
+paid before December 19, both campaigns come off the schedule.
+
+## Sentry
+
+`sentry-2026-12` is a shared website spot (homepage, repository pages and
+browse; no README) plus the labelled line in the Markdown twin of repository
+pages (`markdown: true`). Signed contract October 13, 2026 (Functional
+Software, Inc. dba Sentry; Matt Henderson, with Kaytlyn Fehr handling it from
+December), paid by card on October 19, 2026 ($999, non-refundable). It starts
+when Nango and MeteorOps end, `2026-12-19T05:00:00Z`, and runs 30 days to
+`2027-01-18T05:00:00Z`. If a second shared sponsor books those days, the two
+rotate 50/50 (`pickSponsorCampaign`), as the contract allows. Clicks go to
+`https://sentry.io/` with the site's default UTM tags
+(`utm_campaign=sentry_30_days`); no tracking link was supplied. The line,
+button text and wordmarks are the ones previewed to them on October 13; no
+changes were asked for before they paid. Their first right to book the next
+30 days was offered on October 14 and declined on October 15.
+
+## MeteorOps
+
+`meteorops-2026-11` is the other shared website spot beside Nango (homepage,
+repository pages and browse; no README), paid on October 6, 2026 ($999). Same
+30 days: `2026-11-19T05:00:00Z` to `2026-12-19T05:00:00Z`, rotating with Nango
+(`pickSponsorCampaign`). Clicks go to `https://meteorops.com/` with the site's
+default UTM tags (`utm_campaign=meteorops_30_days`); none were supplied. The
+logo file (it includes the company name), line and button text are the ones
+Michael Zion sent in the email thread. His button text is long, so on small
+phones "Sponsored" sits to the right of the line instead of beside the button
+(`longAction` in `sponsor-slot.tsx`, any button text over 20 characters).
+
+## Nango
+
+`nango-2026-11` is a shared website spot (homepage, repository pages and browse;
+no README), paid on October 5, 2026 ($999). It starts when CodeRabbit ends,
+`2026-11-19T05:00:00Z` (November 19, midnight Toronto), and runs 30 days to
+`2026-12-19T05:00:00Z`. The other shared half is MeteorOps (above). Clicks go to the link Nango sent, with its own
+`utm_source`, `utm_medium` and `utm_campaign` kept and only the
+placement-specific `utm_content` added. Tagline and wordmarks are the ones
+approved in the email thread and shown on its preview.
+
 ## CodeRabbit
 
 [CodeRabbit campaign dashboard](https://us.posthog.com/project/113380/dashboard/2132862)
@@ -16,18 +69,31 @@ CodeRabbit takes over immediately, with those lead-in hours complimentary before
 the booked October 20–November 18 run. It ends at `2026-11-19T05:00:00Z`
 (November 19, midnight Toronto, after the daylight-saving change). Both campaigns
 are exclusive. No renewal or rotation is configured for the paid CodeRabbit run.
+Two shared campaigns booked for the same days rotate (`pickSponsorCampaign`); a
+schedule test rejects any other overlap.
 
-The website resolves `/api/sponsor` against server time with no caching, refreshes
-on tab visibility changes, and switches at the next boundary even on an open page.
-This works on previously cached pages without a launch-day deployment. When no
-campaign is active, the placement links to `/advertise` as vacant inventory.
+One provider per tab (`SponsorCampaignProvider` in the root layout) resolves
+`/api/sponsor` against server time with no caching, and switches at the next
+boundary even on an open page. It rechecks on tab focus at most once a minute
+(always within a minute of a boundary). Every slot reads that state, so a slot
+mounted later starts from the confirmed campaign. Until the server has answered,
+the page keeps the campaign it was rendered with and records no impressions; the
+browser clock is never used. This works on previously cached pages without a
+launch-day deployment. When no campaign is active, the placement links to
+`/advertise` as vacant inventory.
 
 The GitHub `Sponsor README schedule` workflow updates only the marked sponsor
-block using the same schedule and creative. It runs at 22:24 UTC on October 19,
-retries through that hour, removes CodeRabbit after expiry, and reconciles daily.
-GitHub may delay scheduled jobs; the website handoff does not depend on Actions.
-The workflow is also manually dispatchable. Old README revisions keep their
-original campaign-specific redirect links.
+block using the same schedule and creative. It runs every 15 minutes (a no-op
+unless the active campaign changed), so it follows any boundary in
+`src/lib/sponsor-campaign.ts` without date-specific cron lines. GitHub may delay
+scheduled jobs; the website handoff does not depend on Actions. The workflow is
+also manually dispatchable. Its actions are pinned to commit SHAs, and the token
+is only given to the push step. The script needs no packages, so the job runs it
+without `bun install`.
+
+Old README revisions keep their campaign-specific links, but a click on a
+campaign that is not active (ended or not started) redirects to `/advertise` and
+is not recorded. The same applies to a click from a stale cached page.
 
 CodeRabbit uses the approved preview copy, official light/dark wordmarks, and the
 current website layout. Its destination is `https://www.coderabbit.ai/`, with
@@ -37,23 +103,50 @@ No custom UTM link was supplied in the accepted email thread. If one is supplied
 set the campaign destination in `src/lib/sponsor-campaign.ts`; existing UTM
 parameters are preserved and missing defaults filled in.
 
+## Markdown placement
+
+A booking can also buy a line in the Markdown twin of repository pages
+(`/{owner}/{repo}.md`, what agents read): set `markdown: true` on its campaign.
+No campaign has it yet. The line reads `Sponsored by [Name](link): message
+[action](link)`, under the page's links and above the overview, with the
+creative's own name, message and button text. Its link is
+`/out/{campaign}?placement=markdown`, so clicks are counted and tagged
+`utm_content=markdown` like any other placement; fetches by automated agents are
+not counted as clicks. There are no impressions for it: `/admin` counts known
+agents' fetches of Markdown pages as a whole. The line appears and disappears on
+the campaign's dates whatever is cached (the request is routed to a copy named
+after the campaign), and two campaigns with the placement take hourly turns per
+page as on the website.
+
 ## Website impressions
 
 An impression is recorded immediately when the ad renders on a page, including
-below the fold. There is **no viewport requirement or time threshold**. React
-re-renders do not add impressions; loading a new page/route does. This is a loaded
-ad count, not a claim that a visitor looked at the ad. On diagram pages, the ad
-must actually render below a ready diagram before its impression is recorded.
+below the fold. There is **no viewport requirement or time threshold**. Each
+campaign and placement counts once per page view: a visit to a pathname. React
+re-renders and remounts on the same page do not add impressions (for example a
+browse search, filter, sort or page change, or a diagram regenerate), nor do
+query-string changes. Navigating to another pathname, or back again, starts a new
+page view. This is a loaded ad count, not a claim that a visitor looked at the
+ad. On diagram pages, the ad must actually render below a ready diagram before
+its impression is recorded.
 
-`POST /out/:campaign/impression` accepts only website placements, a random event
+`POST /out/:campaign/impression` accepts only website placements, a page-view
 UUID, and same-origin JSON. It uses `sponsor_impression` with the same anonymous
 cookie as clicks. Inactive campaigns, previews, bots, speculative requests and
-DNT/GPC opt-outs do not count. `?test=1` permits controlled, excluded verification
-events before launch. No page/repository path or visitor IP is sent with the event.
-Website CTR divides website clicks by loaded website ads; it never includes
-README clicks. As with clicks, blocked requests, unavailable analytics, and
-PostHog ingestion caps can cause undercounting. Signups/conversions remain in the
-sponsor's own analytics. The existing $0 billing caps are unchanged.
+DNT/GPC opt-outs do not count. After the response, Redis (`SET NX`) accepts each
+page view once and at most 120 impressions per network (IPv6 /48) and campaign
+per hour; keys hold a hash of the network, never the IP. Across all networks a
+campaign accepts at most `SPONSOR_IMPRESSIONS_PER_CAMPAIGN_HOUR` (default
+100,000) impressions an hour; events past it are dropped and logged once as
+`sponsor.campaign_ceiling.exceeded`. If Redis is down, impressions are recorded
+without these checks. `?test=1` permits controlled, excluded verification events
+before launch, but only from a browser signed in to `/admin`; for anyone else
+the flag is ignored. No page/repository path or visitor IP is sent with the
+event. Website CTR divides website clicks by loaded website ads; it never
+includes README clicks. As with clicks, blocked requests and unavailable
+analytics can cause undercounting. Signups/conversions remain in the sponsor's
+own analytics. Product Analytics has no PostHog billing cap (see [the PostHog
+runbook](./posthog.md)).
 
 For the separate preview project, set `SPONSOR_PREVIEW_CAMPAIGN=coderabbit-2026-10`.
 Production hostnames ignore that override. Preview visits never enter reporting.
@@ -76,15 +169,22 @@ and excludes events with `is_test: true`.
 
 ## Capture path
 
-All four placements use `/out/sent-2026-09?placement=home|diagram|browse|readme`.
-The route immediately issues an uncached 302 to Sent with the original
-`utm_source=gitdiagram`, `utm_medium=sponsorship`, `utm_campaign=sent_30_days`, and
-the placement's `utm_content`. Both README links use `placement=readme`.
+All four placements use `/out/<campaign-id>?placement=home|diagram|browse|readme`
+(for example `/out/sent-2026-09` and `/out/coderabbit-2026-10`). For the active
+campaign, the route immediately issues an uncached 302 to the sponsor with
+`utm_source=gitdiagram`, `utm_medium=sponsorship`, the campaign's `utm_campaign`
+(`sent_30_days` for Sent), and the placement's `utm_content`. Both README links
+use `placement=readme`. Other campaigns redirect to `/advertise` (see above).
 
-Next.js `after()` sends one `sponsor_click` event to the existing PostHog project
-without holding up the redirect. Capture has a three-second timeout and fails
-open for navigation. Destinations and placements are allowlisted in code; URL
-parameters cannot turn this into an arbitrary redirect.
+Next.js `after()` sends one `sponsor_click` event to the existing PostHog
+project without holding up the redirect. Redis (`SET NX`) first accepts one
+click per network (IPv6 /48), campaign and placement every 30 minutes, so repeat
+clicks and replayed redirects count once, and at most
+`SPONSOR_CLICKS_PER_CAMPAIGN_HOUR` (default 5,000) clicks per campaign an hour
+across all networks (logged as `sponsor.campaign_ceiling.exceeded`); it fails
+open if Redis is down. Capture has a three-second timeout and fails open for
+navigation. Destinations and placements are allowlisted in code; URL parameters
+cannot turn this into an arbitrary redirect.
 
 Properties are `campaign`, `sponsor`, `placement`, and `is_test`. The anonymous
 distinct ID uses a random first-party `gd_sponsor_visitor` cookie, valid for 30
@@ -96,28 +196,37 @@ disabled for these events.
 Only requests to the production hostnames count. HEAD requests, known bot/link
 preview user agents, speculative prefetch requests, and DNT/GPC requests are
 excluded. The links continue to work for excluded visitors. This is best-effort
-bot filtering, not proof that every recorded click is human. Unique browsers are
+bot filtering, not proof that every recorded click is human; the Redis dedupe
+limits simple replays but not a botnet with many networks. Unique browsers are
 not unique people: cookie clearing, private browsing and different devices can
 increase the count. Placement-level uniques overlap; the total deduplicates them.
 
 Counts measure outbound clicks, not confirmed destination page loads, signups,
 sales, ad impressions or click-through rate. Conversion data requires Sent's
-analytics. Existing PostHog billing caps still apply and may stop ingestion; see
-[the PostHog runbook](./posthog.md). Do not add the existing browser `$autocapture`
-events to these counts, as that would double-count website clicks.
+analytics. Product Analytics has no PostHog billing cap, so caps do not stop
+ingestion; see [the PostHog runbook](./posthog.md). Do not add the existing
+browser `$autocapture` events to these counts, as that would double-count
+website clicks.
 
 ## Verification and future campaigns
 
-Add `&test=1` to a placement URL for controlled production checks. These clicks
-are captured with `is_test: true` and excluded from all dashboard tiles. Use HEAD
+Add `&test=1` to a placement URL for controlled production checks, from a
+browser signed in to `/admin` (anyone else's flag is ignored). These clicks are
+captured with `is_test: true`, skip the Redis dedupe, reach the sponsor even
+outside the campaign dates, and are excluded from all dashboard tiles. Use HEAD
 for routine URL checks without recording an event. Tests under
-`src/server/sponsor-clicks.test.ts` cover attribution, anonymous identity, bot and
-prefetch filtering, opt-outs, destination allowlisting, and capture failures.
+`src/server/sponsor-clicks.test.ts` cover attribution, anonymous identity, bot
+and prefetch filtering, opt-outs, destination allowlisting, inactive campaigns,
+dedupe, campaign ceilings, and capture failures.
 
-Keep old campaign redirect URLs working for historical README revisions. Use a
+Keep old campaign IDs in the schedule so historical README links resolve. Use a
 new campaign ID and a dated dashboard so reports do not mix different paid runs.
-Add new bookings to the schedule, then verify start/end boundaries and README
-rendering before shipping. Billing is never renewed by the schedule.
+Add new bookings to the schedule with a creative in `src/lib/sponsor-creative.ts`
+(set `bookedFrom` if the paid run starts after a lead-in), then verify
+start/end boundaries and README rendering before shipping. A new logo needs a
+new file name in `public/sponsors`: those files are cached for a day plus a week,
+and a test pins each file's hash. The /advertise availability line and booking
+note follow the schedule. Billing is never renewed by the schedule.
 
 Implementation references:
 [Next.js after](https://nextjs.org/docs/app/api-reference/functions/after),

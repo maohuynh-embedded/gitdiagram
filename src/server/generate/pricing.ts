@@ -31,7 +31,10 @@ interface RawResponseUsage {
   };
 }
 
+// Also the explainer videos' OpenAI prices (explainer/director.ts).
 const MODEL_PRICING: Record<string, ModelPricing> = {
+  "gpt-6.1-sol": { inputPerMillionUsd: 2.0, outputPerMillionUsd: 10.0 },
+  "gpt-6-sol": { inputPerMillionUsd: 2.0, outputPerMillionUsd: 10.0 },
   "gpt-6-luna": { inputPerMillionUsd: 0.1, outputPerMillionUsd: 0.5 },
   "gpt-5.6-sol": { inputPerMillionUsd: 4.0, outputPerMillionUsd: 20.0 },
   "gpt-5.6-terra": { inputPerMillionUsd: 2.0, outputPerMillionUsd: 12.0 },
@@ -55,6 +58,12 @@ const MODEL_PRICING: Record<string, ModelPricing> = {
   "gpt-5-nano": { inputPerMillionUsd: 0.05, outputPerMillionUsd: 0.4 },
   "o4-mini": { inputPerMillionUsd: 1.1, outputPerMillionUsd: 4.4 },
 };
+// GPT-5.6 and later: cache writes cost 1.25× input and reads 0.1× (0.05× on
+// GPT-6.1 Sol), and the priority tier doubles both.
+const CACHE_PRICED_MODEL =
+  /^gpt-(?:5\.6-(?:luna|terra|sol)|6-(?:luna|sol)|6\.1-sol)$/;
+const CACHE_READ_RATE: Record<string, number> = { "gpt-6.1-sol": 0.05 };
+
 export const MODEL_PRICING_UNAVAILABLE_ERROR =
   "Cost information is unavailable for the configured AI model.";
 
@@ -84,6 +93,9 @@ export function resolvePricingModel(model: string): string | null {
   const withoutDate = stripDateSnapshotSuffix(stripProviderPrefix(normalized));
   if (MODEL_PRICING[withoutDate]) return withoutDate;
 
+  if (withoutDate.startsWith("gpt-6.1-sol")) return "gpt-6.1-sol";
+  if (withoutDate.startsWith("gpt-6-sol")) return "gpt-6-sol";
+  if (withoutDate.startsWith("gpt-6-luna")) return "gpt-6-luna";
   if (withoutDate === "gpt-5.6") return "gpt-5.6-sol";
   if (withoutDate.startsWith("gpt-5.6-sol")) return "gpt-5.6-sol";
   if (withoutDate.startsWith("gpt-5.6-terra")) return "gpt-5.6-terra";
@@ -124,7 +136,7 @@ export function estimateTextTokenCostUsd(
     throw new ModelPricingUnavailableError();
   }
   const multiplier =
-    /^gpt-(?:5\.6-(?:luna|terra|sol)|6-luna)$/.test(pricingModel) &&
+    CACHE_PRICED_MODEL.test(pricingModel) &&
     (serviceTier === "priority" || serviceTier === "fast")
       ? 2
       : 1;
@@ -226,9 +238,7 @@ export function createCostSummary(params: {
     params.usage.outputTokens,
   );
 
-  const supportsCachePricing = /^gpt-(?:5\.6-(?:luna|terra|sol)|6-luna)$/.test(
-    pricingModel,
-  );
+  const supportsCachePricing = CACHE_PRICED_MODEL.test(pricingModel);
   const reads = Math.min(
     Math.max(params.usage.cachedInputTokens ?? 0, 0),
     params.usage.inputTokens,
@@ -238,7 +248,9 @@ export function createCostSummary(params: {
     Math.max(0, params.usage.inputTokens - reads),
   );
   const cacheAdjustment = supportsCachePricing
-    ? ((-0.9 * reads + 0.25 * writes) * pricing.inputPerMillionUsd) / 1_000_000
+    ? ((-(1 - (CACHE_READ_RATE[pricingModel] ?? 0.1)) * reads + 0.25 * writes) *
+        pricing.inputPerMillionUsd) /
+      1_000_000
     : 0;
   const tier = params.usage.serviceTier;
   const tierMultiplier =

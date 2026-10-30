@@ -6,9 +6,10 @@ import { Header } from "~/components/header";
 import { Footer } from "~/components/footer";
 import { LivePresence } from "~/components/live-presence";
 import { CSPostHogProvider } from "./providers";
-import { InitialSponsorCampaignProvider } from "~/hooks/use-sponsor-campaign";
-import { activeSponsorCampaign } from "~/lib/sponsor-campaign";
+import { SponsorCampaignProvider } from "~/hooks/use-sponsor-campaign";
+import { renderedSponsorSchedule } from "~/lib/sponsor-campaign";
 import { SITE_URL } from "~/lib/site";
+import { chunkReloadScript } from "~/lib/chunk-reload";
 
 export const metadata: Metadata = {
   title: "GitDiagram",
@@ -80,15 +81,17 @@ export default function RootLayout({
       suppressHydrationWarning
       className={`${GeistSans.variable}`}
     >
+      <head>
+        {/* Before any chunk loads: reload once if one fails (see chunk-reload.ts). */}
+        <script dangerouslySetInnerHTML={{ __html: chunkReloadScript }} />
+      </head>
       <body className="flex min-h-screen flex-col">
         <CSPostHogProvider>
-          <InitialSponsorCampaignProvider
-            campaignId={activeSponsorCampaign()?.id ?? null}
-          >
+          <SponsorCampaignProvider {...renderedSponsorSchedule()}>
             <Header />
             <div className="flex-grow">{children}</div>
             <Footer />
-          </InitialSponsorCampaignProvider>
+          </SponsorCampaignProvider>
           <LivePresence />
         </CSPostHogProvider>
       </body>

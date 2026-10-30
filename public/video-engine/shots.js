@@ -7,219 +7,58 @@ function build() {
   var T = window.TIMING;
   var DUR = T.DURATION;
   var TB = T.beats;
-  var U = 120;
   var NS = "http://www.w3.org/2000/svg";
-  var INK = "#17111f";
   var tl = gsap.timeline({ paused: true });
   var stage = document.getElementById("scenes");
-
-  // ---------- sound ----------
-  // Builders ask for hits freely; mixSfx (run once the film is built) keeps a
-  // sparse, varied few: short untuned foley only, the scene change plus at most
-  // three hits a scene, never the same sound twice within three seconds, and
-  // every repeat slightly re-pitched so nothing sounds copy-pasted.
-  var SFX = (window.__SFX = []);
-  var sfxWanted = [];
-  var sfxScene = 0;
-  var SFX_RANK = { whoosh: 3, stamp: 2, pop: 1, tick: 0 };
-  function sfx(name, t, gain, rate, transition) {
-    sfxWanted.push({ name: name, t: Math.max(0, t), gain: gain || 0, rate: rate || 1, scene: sfxScene, transition: Boolean(transition) });
-  }
-  function mixSfx() {
-    var PER_SCENE = 3;
-    var perScene = {};
-    var picked = [];
-    sfxWanted
-      .slice()
-      .sort(function (a, b) {
-        return b.transition - a.transition || SFX_RANK[b.name] - SFX_RANK[a.name] || a.t - b.t;
-      })
-      .forEach(function (c) {
-        if (!c.transition && (perScene[c.scene] || 0) >= PER_SCENE) return;
-        for (var i = 0; i < picked.length; i++) {
-          var gap = Math.abs(picked[i].t - c.t);
-          if (gap < 0.7 || (picked[i].name === c.name && gap < 3)) return;
-        }
-        if (!c.transition) perScene[c.scene] = (perScene[c.scene] || 0) + 1;
-        picked.push(c);
-      });
-    var RATE = [1, 0.93, 1.07, 0.96, 1.11, 0.9];
-    var GAIN = [0, -1.5, -0.5, -2.5, -1];
-    var seen = {};
-    picked
-      .sort(function (a, b) { return a.t - b.t; })
-      .forEach(function (c) {
-        var k = (seen[c.name] = (seen[c.name] || 0) + 1) - 1;
-        SFX.push({ name: c.name, t: Number(c.t.toFixed(3)), gain: c.gain + GAIN[k % GAIN.length], rate: Number((c.rate * RATE[k % RATE.length]).toFixed(3)) });
-      });
-  }
-
-  // ---------- DOM + text ----------
-  function esc(s) {
-    return String(s == null ? "" : s).replace(/[&<>"]/g, function (c) {
-      return { "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c];
-    });
-  }
-  function h(tag, cls, style, parent, html) {
-    var e = document.createElement(tag);
-    if (cls) e.className = cls;
-    if (style) e.style.cssText = style;
-    if (html != null) e.innerHTML = html;
-    if (parent) parent.appendChild(e);
-    return e;
-  }
-  var ctx2d = document.createElement("canvas").getContext("2d");
-  function textW(text, font) {
-    ctx2d.font = font;
-    return ctx2d.measureText(text).width;
-  }
-  function wrap(text, font, maxW) {
-    var out = [];
-    var line = "";
-    String(text)
-      .split(/\s+/)
-      .forEach(function (w) {
-        var next = line ? line + " " + w : w;
-        if (line && textW(next, font) > maxW) {
-          out.push(line);
-          line = w;
-        } else line = next;
-      });
-    if (line) out.push(line);
-    return out;
-  }
-  // Largest size at which the text wraps inside the box.
-  function fitSize(text, fontOf, maxW, maxH, lineHeight, max, min) {
-    var longest = String(text)
-      .split(/\s+/)
-      .sort(function (a, b) {
-        return b.length - a.length;
-      })[0] || "";
-    for (var s = max; s > min; s -= 1) {
-      var font = fontOf(s);
-      if (textW(longest, font) > maxW) continue;
-      if (wrap(text, font, maxW).length * s * lineHeight <= maxH) return s;
-    }
-    return min;
-  }
-  // The canvas estimates above miss italics, kerning and flex padding, so every
-  // text block is checked against its real layout: shrink until the content
-  // fits its width (and height, when given), then ellipsize what still spills.
-  function fitText(node, maxH, min) {
-    var size = parseFloat(getComputedStyle(node).fontSize);
-    function fits() {
-      return node.scrollWidth <= node.clientWidth + 1 && (maxH == null || node.scrollHeight <= maxH + 1);
-    }
-    while (!fits() && size > min) {
-      size -= 1;
-      node.style.fontSize = size + "px";
-    }
-    if (!fits()) {
-      node.style.overflow = "hidden";
-      node.style.textOverflow = "ellipsis";
-    }
-    return size;
-  }
-  function monoFit(lines, maxW, maxH, max, min, lineHeight) {
-    var longest = Math.max.apply(null, lines.map(function (l) { return l.length; }).concat([8]));
-    var byW = maxW / (longest * 0.6);
-    var byH = maxH / (Math.max(1, lines.length) * lineHeight);
-    return Math.max(min, Math.min(max, Math.floor(Math.min(byW, byH))));
-  }
-  function accentHtml(text) {
-    return esc(text).replace(/\*([^*]+)\*/g, '<span class="it" style="color:var(--purple-deep)">$1</span>');
-  }
-  // Split display text into words, carrying *accent* spans that cross word boundaries.
-  function accentWords(text) {
-    var on = false;
-    return String(text)
-      .split(/\s+/)
-      .filter(Boolean)
-      .map(function (word) {
-        var starts = word.charAt(0) === "*";
-        var clean = word.replace(/\*/g, "");
-        if (starts) on = true;
-        var html = on ? '<span class="it" style="color:var(--purple-deep)">' + esc(clean) + "</span>" : esc(clean);
-        if (word.length > 1 && word.charAt(word.length - 1) === "*") on = false;
-        else if (!starts && word.indexOf("*") > 0) on = !on;
-        return html;
-      });
-  }
-
-  // ---------- syntax tint ----------
-  var KW = {};
-  "const let var function return if else for while do switch case break continue new class extends implements import export from default async await yield try catch finally throw typeof instanceof in of this super null undefined true false def lambda pass raise with as elif not and or is None True False self func package type struct interface map chan go defer select range fn pub impl trait enum mod use match mut ref where crate static public private protected void int string bool readonly abstract override val fun object when"
-    .split(" ")
-    .forEach(function (k) {
-      KW[k] = 1;
-    });
-  function tint(line, hashComments) {
-    var re = hashComments
-      ? /(#.*$)|("(?:[^"\\]|\\.)*"|'(?:[^'\\]|\\.)*')|(\b\d+(?:\.\d+)?\b)|([A-Za-z_$][\w$]*)/g
-      : /(\/\/.*$|\/\*.*?\*\/)|("(?:[^"\\]|\\.)*"|'(?:[^'\\]|\\.)*'|`(?:[^`\\]|\\.)*`)|(\b\d+(?:\.\d+)?\b)|([A-Za-z_$][\w$]*)/g;
-    var out = "";
-    var last = 0;
-    var m;
-    while ((m = re.exec(line))) {
-      out += esc(line.slice(last, m.index));
-      if (m[1]) out += '<span class="tk-c">' + esc(m[1]) + "</span>";
-      else if (m[2]) out += '<span class="tk-s">' + esc(m[2]) + "</span>";
-      else if (m[3]) out += '<span class="tk-n">' + esc(m[3]) + "</span>";
-      else out += KW[m[4]] ? '<span class="tk-k">' + esc(m[4]) + "</span>" : esc(m[4]);
-      last = m.index + m[0].length;
-    }
-    return out + esc(line.slice(last));
-  }
-
-  // ---------- icons (24×24 line art) ----------
-  var ICON = {
-    server: '<rect x="3" y="4" width="18" height="7" rx="2"/><rect x="3" y="13" width="18" height="7" rx="2"/><path d="M7 7.5h.01M7 16.5h.01"/>',
-    database: '<ellipse cx="12" cy="5.5" rx="8" ry="3"/><path d="M4 5.5v13c0 1.7 3.6 3 8 3s8-1.3 8-3v-13M4 12c0 1.7 3.6 3 8 3s8-1.3 8-3"/>',
-    user: '<circle cx="12" cy="8" r="4"/><path d="M4 21c0-4.4 3.6-7 8-7s8 2.6 8 7"/>',
-    file: '<path d="M14 3H6v18h12V7z"/><path d="M14 3v4h4"/>',
-    folder: '<path d="M3 6.5A1.5 1.5 0 0 1 4.5 5H10l2 2.5h7.5A1.5 1.5 0 0 1 21 9v9.5a1.5 1.5 0 0 1-1.5 1.5h-15A1.5 1.5 0 0 1 3 18.5z"/>',
-    globe: '<circle cx="12" cy="12" r="9"/><path d="M3 12h18M12 3c2.5 2.5 3.5 5.5 3.5 9s-1 6.5-3.5 9c-2.5-2.5-3.5-5.5-3.5-9s1-6.5 3.5-9z"/>',
-    lock: '<rect x="4" y="10" width="16" height="11" rx="2"/><path d="M8 10V7a4 4 0 0 1 8 0v3"/>',
-    bolt: '<path d="M13 2 4 14h7l-1 8 9-12h-7z"/>',
-    clock: '<circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 2"/>',
-    queue: '<rect x="3" y="4" width="18" height="4" rx="1"/><rect x="3" y="10" width="18" height="4" rx="1"/><rect x="3" y="16" width="18" height="4" rx="1"/>',
-    cpu: '<rect x="6" y="6" width="12" height="12" rx="2"/><path d="M9 2v4M15 2v4M9 18v4M15 18v4M2 9h4M2 15h4M18 9h4M18 15h4"/>',
-    cloud: '<path d="M7 18a4.5 4.5 0 0 1-.5-9 6 6 0 0 1 11.5 1.5A4 4 0 0 1 17.5 18z"/>',
-    key: '<circle cx="8" cy="15" r="4"/><path d="M11 12l9-9M16 7l3 3"/>',
-    gear: '<circle cx="12" cy="12" r="3.5"/><path d="M12 2v3M12 19v3M2 12h3M19 12h3M4.9 4.9 7 7M17 17l2.1 2.1M4.9 19.1 7 17M17 7l2.1-2.1"/>',
-    package: '<path d="M3 7.5 12 3l9 4.5v9L12 21l-9-4.5z"/><path d="M3 7.5 12 12l9-4.5M12 12v9"/>',
-    browser: '<rect x="3" y="4" width="18" height="16" rx="2"/><path d="M3 9h18M6.5 6.5h.01M9 6.5h.01"/>',
-    terminal: '<rect x="3" y="4" width="18" height="16" rx="2"/><path d="M7 9l3 3-3 3M12 15h5"/>',
-    shield: '<path d="M12 3 4 6v6c0 5 3.5 8 8 9 4.5-1 8-4 8-9V6z"/>',
-    cache: '<path d="M4 7c0-1.7 3.6-3 8-3s8 1.3 8 3-3.6 3-8 3-8-1.3-8-3zM4 7v10c0 1.7 3.6 3 8 3M20 7v4"/><path d="M15 16l2 2 4-4"/>',
-  };
-  function icon(name, size) {
-    if (!ICON[name]) return "";
-    return (
-      '<svg width="' + size + '" height="' + size + '" viewBox="0 0 24 24" fill="none" stroke="#17111f" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" style="flex-shrink:0">' +
-      ICON[name] +
-      "</svg>"
-    );
-  }
-  var CHECK = '<svg width="24" height="24" viewBox="0 0 22 22" fill="none" stroke="#0f7a48" stroke-width="4" stroke-linecap="round" stroke-linejoin="round"><path d="M4 11 L9 16 L18 6"/></svg>';
-  var CROSS = '<svg width="24" height="24" viewBox="0 0 22 22" fill="none" stroke="#b3263a" stroke-width="4" stroke-linecap="round"><path d="M5 5 L17 17 M17 5 L5 17"/></svg>';
-  // The GitDiagram mark (the favicon: a document holding a small flowchart).
-  var GLYPH = '<svg width="34" height="34" viewBox="94 94 832 832" aria-hidden="true"><g transform="translate(0.000000,1024.000000) scale(0.100000,-0.100000)" fill="#9333ea"><path d="M3860 9210 l-1215 -5 -70 -27 c-205 -78 -355 -207 -439 -378 -15 -30 -31 -62 -36 -71 -5 -9 -18 -56 -29 -104 l-21 -87 0 -3418 0 -3418 21 -87 c11 -48 24 -95 29 -104 5 -9 21 -41 36 -71 85 -173 241 -306 444 -378 l75 -27 2465 0 2465 0 75 27 c203 72 359 205 444 378 15 30 31 62 36 71 5 9 18 56 29 104 21 86 21 98 21 2300 0 1445 -3 2216 -10 2220 -5 3 -504 6 -1107 5 -1178 0 -1313 4 -1429 44 -239 84 -407 258 -496 516 l-22 65 -6 1219 c-5 1208 -5 1219 -25 1225 -11 3 -567 4 -1235 1z m518 -2560 c121 -16 202 -90 223 -205 6 -34 9 -263 7 -597 -3 -497 -4 -546 -21 -575 -31 -57 -80 -105 -132 -129 -45 -21 -65 -24 -190 -24 -77 0 -146 -4 -153 -9 -11 -7 -14 -93 -13 -452 0 -244 1 -448 1 -453 0 -19 585 -598 615 -610 22 -8 154 -10 470 -6 l440 5 5 155 c5 142 7 159 31 205 27 52 101 118 148 130 44 13 1023 18 1116 6 63 -8 94 -17 125 -37 56 -37 98 -102 111 -169 6 -34 9 -258 7 -597 -3 -497 -4 -546 -21 -575 -31 -57 -80 -105 -132 -129 l-50 -24 -565 0 -565 0 -50 24 c-28 12 -65 39 -82 60 -61 69 -66 87 -72 261 l-6 160 -455 3 -454 2 -361 -359 c-396 -396 -402 -401 -515 -401 -114 0 -115 2 -553 438 -219 218 -409 413 -423 433 -52 75 -60 159 -24 255 6 16 175 194 376 395 200 201 364 369 364 375 0 5 1 209 1 453 1 359 -2 445 -13 452 -7 5 -76 9 -153 9 -125 0 -145 3 -190 24 -52 24 -101 72 -132 129 -17 29 -18 78 -21 581 -2 354 1 567 7 598 24 108 105 183 214 197 88 12 997 12 1085 1z M5635 9038 c-3 -13 -4 -511 -3 -1108 l3 -1085 22 -41 c31 -58 90 -111 143 -129 39 -13 198 -15 1135 -16 1011 0 1090 1 1093 16 3 11 -391 412 -1181 1201 -651 651 -1189 1184 -1195 1184 -7 0 -14 -10 -17 -22z"/></g></svg>';
-  var TONE_BG = { plain: "var(--card)", accent: "var(--purple)", soft: "var(--purple-soft)", ok: "var(--green-soft)", bad: "var(--red-soft)", ghost: "transparent" };
-  var TONE_INK = { plain: INK, accent: INK, soft: INK, ok: "#0f7a48", bad: "#b3263a", ghost: INK };
-  var PAINT = { none: "none", paper: "#f2e8ff", card: "#fdfaff", accent: "#bd85fb", soft: "#dcc2ff", ink: INK, ok: "#cff2de", bad: "#ffd9da" };
+  // Helpers and geometry (kit.js, camera.js) and the sound mixer (sound.js).
+  var K = window.ShotKit;
+  var U = K.U;
+  var INK = K.INK;
+  var dict = K.dict;
+  var own = K.own;
+  var esc = K.esc;
+  var h = K.h;
+  var textW = K.textW;
+  var fitSize = K.fitSize;
+  var fitText = K.fitText;
+  var monoFit = K.monoFit;
+  var accentHtml = K.accentHtml;
+  var accentWords = K.accentWords;
+  var tint = K.tint;
+  var icon = K.icon;
+  var CHECK = K.CHECK;
+  var CROSS = K.CROSS;
+  var GLYPH = K.GLYPH;
+  var TONE_BG = K.TONE_BG;
+  var TONE_INK = K.TONE_INK;
+  var PAINT = K.PAINT;
+  var toneOf = K.toneOf;
+  var norm = K.norm;
+  var fmt = K.fmt;
+  var rectOf = K.rectOf;
+  var route = K.route;
+  var pathOf = K.pathOf;
+  var lerpRect = K.lerpRect;
+  var square = K.square;
+  var focusView = K.focusView;
+  var autoView = K.autoView;
+  // The frame: the wide 1920 × 1080 one, or a tall one for reels (stage.js).
+  var F = K.frame;
+  var sound = K.sound();
+  var sfx = sound.sfx;
 
   // ---------- clock ----------
-  function norm(w) {
-    return String(w || "").toLowerCase().replace(/[^a-z0-9.#/]/g, "").replace(/\.$/, "");
-  }
+  // An exact word first, so a cue for "data" never lands on an earlier
+  // "database"; a shared stem ("route" for "routes") only as a fallback.
   function cueTime(bi, word) {
     var c = norm(word);
     if (!c) return null;
     var ws = TB[bi].words;
-    for (var k = 0; k < ws.length; k++) {
+    var k;
+    for (k = 0; k < ws.length; k++) if (ws[k].w === c) return ws[k].s;
+    for (k = 0; k < ws.length; k++) {
       var w = ws[k].w;
-      if (w === c || (c.length > 3 && w.indexOf(c) === 0) || (w.length > 3 && c.indexOf(w) === 0)) return ws[k].s;
+      if ((c.length > 3 && w.indexOf(c) === 0) || (w.length > 3 && c.indexOf(w) === 0)) return ws[k].s;
     }
     return null;
   }
@@ -234,6 +73,11 @@ function build() {
   });
   var CYCLE = ["slide", "push", "zoom", "slide", "cut", "push", "zoom"];
   var endAt = Math.min(DUR - 2.4, T.SPEECH_END + 0.5);
+  // A feed cut (the vertical MP4, stage.js) opens on its first beat already
+  // built, and its end card comes in under the last spoken line instead of
+  // after it, so the film can stop right after the last word.
+  var FEED = Boolean(K.feed);
+  if (FEED && TB.length) endAt = Math.max(0.5, Math.min(endAt, Math.max(TB[TB.length - 1].start + 1.2, T.SPEECH_END - 1)));
   scenes.forEach(function (sc, k) {
     var first = sc.beats[0];
     sc.tIn = k === 0 ? 0 : TB[first].start - 0.22;
@@ -255,7 +99,9 @@ function build() {
   }
 
   // ---------- element builders ----------
-  // Each returns { el, enter(t), parts } where parts serve later actions.
+  // Each returns { el, enter(t) } plus whatever later actions need (a label to
+  // replace, line bars, typed lines). A visual made of sibling nodes (an
+  // arrow) lists them all in `nodes`, so every action reaches every part.
   function place(parent, e, extra) {
     var el = h(
       "div",
@@ -283,13 +129,8 @@ function build() {
     tl.fromTo(el, { clipPath: "inset(0 100% 0 0)" }, { clipPath: "inset(0 0% 0 0)", duration: d, ease: "steps(" + n + ")" }, t);
     tl.set(el, { clipPath: "none" }, t + d + 0.01);
   }
-  function swapNode(host, style, html) {
-    var n = h("div", "", "position:absolute;inset:0;display:flex;align-items:center;" + style, host, html);
-    n.style.opacity = 0;
-    return n;
-  }
 
-  var B = {};
+  var B = dict();
   B.heading = function (e, layer) {
     var W = e.w * U;
     var H = e.h * U;
@@ -333,7 +174,7 @@ function build() {
     var extra = future.filter(function (a) { return a.do === "type"; }).map(function (a) { return a.line || ""; });
     var all = e.lines.concat(extra);
     var lh = 1.62;
-    var fs = monoFit(all, e.w * U - 96, e.h * U - 52 - 26, 25, 17, lh);
+    var fs = monoFit(all, e.w * U - 96, e.h * U - 52 - 26, 34, 17, lh);
     var maxChars = Math.floor((e.w * U - 96) / (fs * 0.6));
     all = all.map(function (l) { return l.length > maxChars ? l.slice(0, maxChars - 1) + "…" : l; });
     e = Object.assign({}, e, { lines: all.slice(0, e.lines.length) });
@@ -373,7 +214,7 @@ function build() {
     head.innerHTML = '<i style="width:12px;height:12px;border-radius:50%;background:#ff6b6b;display:block"></i><i style="width:12px;height:12px;border-radius:50%;background:#ffd166;display:block"></i><i style="width:12px;height:12px;border-radius:50%;background:#7ee2a8;display:block"></i><span style="margin-left:8px">' + esc(e.title || "terminal") + "</span>";
     var extra = future.filter(function (a) { return a.do === "type"; }).map(function (a) { return a.line || ""; });
     var all = e.lines.concat(extra);
-    var fs = monoFit(all, e.w * U - 48, e.h * U - 44 - 24, 24, 17, 1.55);
+    var fs = monoFit(all, e.w * U - 48, e.h * U - 44 - 24, 32, 17, 1.55);
     var cut = Math.floor((e.w * U - 48) / (fs * 0.6));
     all = all.map(function (l) { return l.length > cut ? l.slice(0, cut - 1) + "…" : l; });
     e = Object.assign({}, e, { lines: all.slice(0, e.lines.length) });
@@ -408,15 +249,15 @@ function build() {
   B.box = function (e, layer) {
     var W = e.w * U;
     var H = e.h * U;
-    var tone = e.tone || "plain";
-    var ghost = tone === "ghost";
-    var el = place(layer, e, cardStyle(TONE_BG[tone]) + (ghost ? "border-style:dashed;box-shadow:none;" : "") + "display:flex;align-items:center;gap:14px;padding:0 20px;");
+    var tn = toneOf(e.tone);
+    var ghost = tn === "ghost";
+    var el = place(layer, e, cardStyle(TONE_BG[tn]) + (ghost ? "border-style:dashed;box-shadow:none;" : "") + "display:flex;align-items:center;gap:14px;padding:0 20px;");
     var ic = e.icon && e.icon !== "none" ? Math.min(46, H * 0.42) : 0;
     if (ic) el.insertAdjacentHTML("beforeend", icon(e.icon, ic));
     var col = h("div", "", "position:relative;flex:1;min-width:0;height:100%;display:flex;flex-direction:column;justify-content:center", el);
     var tw = W - 44 - (ic ? ic + 14 : 0);
     var ls = fitSize(e.label, function (s) { return "650 " + s + "px Geist"; }, tw, (e.sub ? H * 0.5 : H * 0.72), 1.12, 40, 16);
-    var label = h("div", "", "font:650 " + ls + "px/1.12 Geist;color:" + TONE_INK[tone] + ";letter-spacing:-0.01em", col, esc(e.label));
+    var label = h("div", "", "font:650 " + ls + "px/1.12 Geist;color:" + TONE_INK[tn] + ";letter-spacing:-0.01em", col, esc(e.label));
     var sub = null;
     if (e.sub) {
       var ss = Math.max(14, Math.min(22, Math.floor(tw / (e.sub.length * 0.6)), Math.floor(H * 0.22)));
@@ -427,9 +268,9 @@ function build() {
   };
   B.chip = function (e, layer) {
     var H = e.h * U;
-    var tone = e.tone || "plain";
+    var tn = toneOf(e.tone);
     var fs = Math.max(15, Math.min(Math.floor(H * 0.42), Math.floor((e.w * U - 36) / (e.text.length * 0.6))));
-    var el = place(layer, e, "display:flex;align-items:center;justify-content:center;border:3px solid " + INK + ";border-radius:999px;background:" + TONE_BG[tone] + ";box-shadow:3px 3px 0 " + INK + ";padding:0 18px;font:600 " + fs + "px/1 'Geist Mono';color:" + TONE_INK[tone] + ";white-space:nowrap;overflow:hidden");
+    var el = place(layer, e, "display:flex;align-items:center;justify-content:center;border:3px solid " + INK + ";border-radius:999px;background:" + TONE_BG[tn] + ";box-shadow:3px 3px 0 " + INK + ";padding:0 18px;font:600 " + fs + "px/1 'Geist Mono';color:" + TONE_INK[tn] + ";white-space:nowrap;overflow:hidden");
     var label = h("span", "", "display:block;min-width:0;max-width:100%;overflow:hidden;text-overflow:ellipsis", el, esc(e.text));
     fitText(label, null, 12);
     return { el: el, label: label, labelHost: el, enter: function (t) { popIn(el, t, { from: 0.5 }); } };
@@ -456,7 +297,7 @@ function build() {
     var body = h("div", "", "position:absolute;left:0;right:0;top:" + (48 + Math.max(10, (e.h * U - 48 - rh * n) / 2)) + "px", el);
     var rows = [];
     var bars = {};
-    e.paths.forEach(function (p, i) {
+    e.paths.forEach(function (p) {
       rows.push(h("div", "mono", "position:relative;height:" + rh + "px;padding-left:28px;font:500 " + fs + "px/" + rh + "px 'Geist Mono';white-space:nowrap", body, esc(p)));
     });
     function bar(i) {
@@ -548,9 +389,6 @@ function build() {
       },
     };
   };
-  function fmt(v) {
-    return Number.isInteger(v) ? v.toLocaleString("en-US") : v.toLocaleString("en-US", { maximumFractionDigits: 2 });
-  }
   function odometer(parent, value, prefix, suffix, size) {
     var row = h("div", "serif", "display:flex;align-items:flex-end;font-size:" + size + "px;line-height:1;height:" + size + "px;letter-spacing:-0.02em", parent);
     if (prefix) h("span", "", "", row, esc(prefix));
@@ -580,7 +418,7 @@ function build() {
     var first = odometer(host, e.value, e.prefix, e.suffix, size);
     var later = future.filter(function (a) { return a.do === "count"; }).map(function (a) {
       var wrapEl = h("div", "", "position:absolute;left:0;top:0;opacity:0", host);
-      return { at: a, od: odometer(wrapEl, Number(a.value) || 0, e.prefix, e.suffix, size), wrap: wrapEl };
+      return { od: odometer(wrapEl, Number(a.value) || 0, e.prefix, e.suffix, size), wrap: wrapEl };
     });
     if (label) h("div", "", "margin-top:12px;font:500 " + Math.max(16, Math.min(28, Math.floor(H * 0.16))) + "px/1.2 Geist;color:var(--ink-2)", el, esc(e.label));
     return {
@@ -627,7 +465,7 @@ function build() {
     var status = null;
     if (e.status != null) {
       var ok = e.status < 400;
-      status = h("div", "", "padding:6px 12px;border:2.5px solid " + INK + ";border-radius:999px;background:" + (ok ? "var(--green-soft)" : "var(--red-soft)") + ";color:" + (ok ? "#0f7a48" : "#b3263a") + ";font:750 " + (fs - 2) + "px/1 'Geist Mono'", head, String(e.status));
+      status = h("div", "", "padding:6px 12px;border:2.5px solid " + INK + ";border-radius:999px;background:" + (ok ? "var(--green-soft)" : "var(--red-soft)") + ";color:" + (ok ? "#0f7a48" : "#b3263a") + ";font:750 " + (fs - 2) + "px/1 'Geist Mono'", head, esc(e.status));
     }
     var bodyLines = [];
     if (e.lines.length) {
@@ -654,6 +492,26 @@ function build() {
     });
     return { el: el, enter: function (t) { rows.forEach(function (r, i) { riseIn(r, t + i * 0.1, { x: -16, y: 0, d: 0.3 }); }); } };
   };
+  // A real picture from the repository's README (a logo, a screenshot),
+  // stored with the film: plan.images maps its id to a same-origin path.
+  B.image = function (e, layer) {
+    var src = String(own(S.images || {}, e.src) || "");
+    // Same-origin paths only: "//host" and "/\host" both leave the origin.
+    if (!/^\/(?![\/\\])/.test(src)) return null;
+    var el = place(layer, e, cardStyle("var(--card)"));
+    var img = h("img", "", "position:absolute;left:12px;right:12px;top:12px;bottom:12px;width:calc(100% - 24px);height:calc(100% - 24px);object-fit:" + (e.fit === "cover" ? "cover" : "contain") + ";border-radius:8px", el);
+    img.src = src;
+    img.alt = "";
+    return {
+      el: el,
+      enter: function (t) {
+        riseIn(el, t, { y: 40, d: 0.5 });
+        sfx("pop", t, -17, 0.8);
+      },
+    };
+  };
+  // The shapes the server's normalizer allows (src/server/explainer/shots.ts).
+  var SHAPES = { path: 1, rect: 1, circle: 1, line: 1, polyline: 1, polygon: 1 };
   B.svg = function (e, layer) {
     var el = place(layer, e, "");
     var svg = document.createElementNS(NS, "svg");
@@ -664,13 +522,15 @@ function build() {
     el.appendChild(svg);
     var drawn = [];
     (e.shapes || []).forEach(function (s) {
+      // Only drawing primitives: never a <script>, <foreignObject> or <a>.
+      if (!own(SHAPES, s.shape)) return;
       var node = document.createElementNS(NS, s.shape);
       ["x", "y", "width", "height", "r", "cx", "cy", "x1", "y1", "x2", "y2", "rx"].forEach(function (k) {
         if (s[k] != null) node.setAttribute(k, s[k]);
       });
       if (s.d) node.setAttribute("d", s.d);
       if (s.points) node.setAttribute("points", s.points);
-      node.setAttribute("fill", PAINT[s.fill] || "none");
+      node.setAttribute("fill", own(PAINT, s.fill) || "none");
       node.setAttribute("stroke", s.stroke === "none" ? "none" : s.stroke === "accent" ? "#7a2be0" : INK);
       node.setAttribute("stroke-width", "4");
       node.setAttribute("vector-effect", "non-scaling-stroke");
@@ -695,37 +555,24 @@ function build() {
   };
 
   // ---------- arrows ----------
-  function rectOf(item) {
-    return { x: item.pos.x * U, y: item.pos.y * U, w: item.pos.w * U, h: item.pos.h * U };
-  }
-  function route(a, b) {
-    var ac = { x: a.x + a.w / 2, y: a.y + a.h / 2 };
-    var bc = { x: b.x + b.w / 2, y: b.y + b.h / 2 };
-    var gapX = Math.max(b.x - (a.x + a.w), a.x - (b.x + b.w));
-    var gapY = Math.max(b.y - (a.y + a.h), a.y - (b.y + b.h));
-    if (gapX >= gapY) {
-      var right = bc.x >= ac.x;
-      var x1 = right ? a.x + a.w + 6 : a.x - 6;
-      var x2 = right ? b.x - 10 : b.x + b.w + 10;
-      var mx = (x1 + x2) / 2;
-      return Math.abs(ac.y - bc.y) < 4 ? [[x1, ac.y], [x2, ac.y]] : [[x1, ac.y], [mx, ac.y], [mx, bc.y], [x2, bc.y]];
-    }
-    var down = bc.y >= ac.y;
-    var y1 = down ? a.y + a.h + 6 : a.y - 6;
-    var y2 = down ? b.y - 10 : b.y + b.h + 10;
-    var my = (y1 + y2) / 2;
-    return Math.abs(ac.x - bc.x) < 4 ? [[ac.x, y1], [ac.x, y2]] : [[ac.x, y1], [ac.x, my], [bc.x, my], [bc.x, y2]];
-  }
-  function buildArrow(e, layer, items) {
+  // A moving end redraws its arrows in this many straight tweens.
+  var REROUTE_STEPS = 10;
+  function buildArrow(e, layer, items, cards) {
     var a = items[e.from];
     var b = items[e.to];
     if (!a || !b) return null;
-    var pts = route(rectOf(a), rectOf(b));
+    // The rects the route was last drawn between, and that route. It keeps
+    // clear of every other card the scene will hold, on screen yet or not.
+    var ends = { a: rectOf(a), b: rectOf(b) };
+    var around = (cards || []).filter(function (c) { return c.id !== e.from && c.id !== e.to; });
+    var pts = route(ends.a, ends.b, around);
     var svg = document.createElementNS(NS, "svg");
     svg.setAttribute("class", "wires");
+    svg.setAttribute("data-id", e.id);
+    svg.setAttribute("data-kind", "arrow");
     layer.insertBefore(svg, layer.firstChild);
     var p = document.createElementNS(NS, "path");
-    p.setAttribute("d", "M" + pts.map(function (q) { return q[0].toFixed(1) + "," + q[1].toFixed(1); }).join(" L"));
+    p.setAttribute("d", pathOf(pts));
     p.setAttribute("fill", "none");
     p.setAttribute("stroke", INK);
     p.setAttribute("stroke-width", "4");
@@ -736,115 +583,188 @@ function build() {
     p.style.strokeDashoffset = e.dashed ? "0" : "1";
     if (e.dashed) p.style.opacity = 0;
     svg.appendChild(p);
-    var end = pts[pts.length - 1];
-    var prev = pts[pts.length - 2];
-    var ang = (Math.atan2(end[1] - prev[1], end[0] - prev[0]) * 180) / Math.PI;
+    function headAt(q) {
+      var end = q[q.length - 1];
+      var prev = q[q.length - 2];
+      var ang = (Math.atan2(end[1] - prev[1], end[0] - prev[0]) * 180) / Math.PI;
+      return "translate(" + end[0] + "," + end[1] + ") rotate(" + ang + ")";
+    }
     var head = document.createElementNS(NS, "path");
     head.setAttribute("d", "M -14 -9 L 1 0 L -14 9 Z");
     head.setAttribute("fill", INK);
-    head.setAttribute("transform", "translate(" + end[0] + "," + end[1] + ") rotate(" + ang + ")");
+    head.setAttribute("transform", headAt(pts));
     head.style.opacity = 0;
     svg.appendChild(head);
+    var nodes = [svg];
     var label = null;
-    if (e.label) {
-      var mid = pts[Math.floor((pts.length - 1) / 2)];
-      var nxt = pts[Math.floor((pts.length - 1) / 2) + 1];
-      label = h("div", "mono", "position:absolute;left:" + ((mid[0] + nxt[0]) / 2 - 130) + "px;top:" + ((mid[1] + nxt[1]) / 2 - 17) + "px;width:260px;text-align:center;font:600 18px/34px 'Geist Mono';color:var(--ink-2)", layer, '<span style="background:var(--paper);padding:3px 9px;border-radius:6px">' + esc(e.label) + "</span>");
+    // The label sits on the route's longest stretch: on the line where the
+    // line is long enough to show either side of it, beside the line where
+    // it is not.
+    var labelW = e.label ? e.label.length * 13.4 + 22 : 0;
+    function labelAt(q) {
+      var best = 0;
+      var longest = -1;
+      for (var i = 1; i < q.length; i++) {
+        var len = Math.abs(q[i][0] - q[i - 1][0]) + Math.abs(q[i][1] - q[i - 1][1]);
+        if (len > longest + 1) {
+          longest = len;
+          best = i;
+        }
+      }
+      var p0 = q[best - 1];
+      var p1 = q[best];
+      var flat = Math.abs(p1[1] - p0[1]) < Math.abs(p1[0] - p0[0]);
+      var dx = 0;
+      var dy = 0;
+      if (flat && longest < labelW + 56) dy = -24;
+      else if (!flat && longest < 34 + 44) dx = labelW / 2 + 12;
+      return { left: (p0[0] + p1[0]) / 2 - 130 + dx + "px", top: (p0[1] + p1[1]) / 2 - 17 + dy + "px" };
     }
-    var packet = h("div", "", "position:absolute;left:" + (pts[0][0] - 11) + "px;top:" + (pts[0][1] - 11) + "px;width:22px;height:22px;border-radius:50%;background:#7a2be0;border:3px solid " + INK + ";opacity:0", layer);
+    if (e.label) {
+      var at = labelAt(pts);
+      label = h("div", "mono", "position:absolute;left:" + at.left + ";top:" + at.top + ";width:260px;text-align:center;font:600 22px/34px 'Geist Mono';color:var(--ink-2)", layer, '<span style="background:var(--paper);padding:3px 9px;border-radius:6px">' + esc(e.label) + "</span>");
+      nodes.push(label);
+    }
+    // Packets ride in their own box, so an arrow that exits takes a packet
+    // still running with it.
+    var packets = h("div", "", "position:absolute;left:0;top:0", layer);
+    nodes.push(packets);
+    var home = pts[0];
+    var packet = h("div", "", "position:absolute;left:" + (home[0] - 11) + "px;top:" + (home[1] - 11) + "px;width:22px;height:22px;border-radius:50%;background:#7a2be0;border:3px solid " + INK + ";opacity:0", packets);
+    // The route's bounds (padded to the label's height), for actions that
+    // frame or mark the arrow.
+    function boxOf(q) {
+      var xs = q.map(function (r) { return r[0]; });
+      var ys = q.map(function (r) { return r[1]; });
+      var x0 = Math.min.apply(null, xs) - 20;
+      var y0 = Math.min.apply(null, ys) - 20;
+      return { x: x0 / U, y: y0 / U, w: (Math.max.apply(null, xs) + 20 - x0) / U, h: (Math.max.apply(null, ys) + 20 - y0) / U };
+    }
+    // Packet runs scheduled so far, so a reroute can send later ones the new way.
+    var trips = [];
+    function flow(t, until) {
+      var legs = [];
+      var total = 0;
+      for (var i = 1; i < pts.length; i++) {
+        var len = Math.hypot(pts[i][0] - pts[i - 1][0], pts[i][1] - pts[i - 1][1]);
+        legs.push(len);
+        total += len;
+      }
+      var trip = Math.max(0.5, Math.min(1.1, total / 700));
+      var runs = Math.max(1, Math.min(4, Math.floor((until - t) / (trip + 0.2))));
+      for (var r = 0; r < runs; r++) {
+        var t0 = t + r * (trip + 0.2);
+        var keys = [];
+        for (var j = 1; j < pts.length; j++) keys.push({ x: pts[j][0] - home[0], y: pts[j][1] - home[1], duration: (trip * legs[j - 1]) / total, ease: "none" });
+        trips.push({
+          t0: t0,
+          trip: trip,
+          until: until,
+          tweens: [
+            tl.fromTo(packet, { x: pts[0][0] - home[0], y: pts[0][1] - home[1], opacity: 1 }, { keyframes: keys, immediateRender: false }, t0).recent(),
+            tl.to(packet, { opacity: 0, duration: 0.1 }, t0 + trip).recent(),
+          ],
+        });
+      }
+    }
     return {
       el: svg,
-      packet: packet,
-      pts: pts,
+      nodes: nodes,
+      arrow: true,
+      from: a,
+      to: b,
+      box: boxOf(pts),
+      highlight: function (t) {
+        tl.to(p, { attr: { stroke: "#7a2be0" }, duration: 0.25 }, t);
+        tl.to(head, { attr: { fill: "#7a2be0" }, duration: 0.25 }, t);
+      },
+      pulse: function (t) {
+        tl.to(p, { attr: { "stroke-width": 8 }, duration: 0.15, yoyo: true, repeat: 1, ease: "power2.out" }, t);
+      },
       enter: function (t) {
         if (e.dashed) tl.fromTo(p, { opacity: 0 }, { opacity: 1, duration: 0.3 }, t);
         else tl.fromTo(p, { strokeDashoffset: 1 }, { strokeDashoffset: 0, duration: 0.38, ease: "power2.inOut" }, t);
         tl.fromTo(head, { opacity: 0 }, { opacity: 1, duration: 0.1 }, t + 0.3);
         if (label) riseIn(label, t + 0.25, { y: 8, d: 0.25 });
       },
-      flow: function (t, until) {
-        var legs = [];
-        var total = 0;
-        for (var i = 1; i < pts.length; i++) {
-          var len = Math.hypot(pts[i][0] - pts[i - 1][0], pts[i][1] - pts[i - 1][1]);
-          legs.push(len);
-          total += len;
+      flow: flow,
+      // An end moved (its pos is already the new one): redraw the route
+      // between the ends as they travel, on the move's own clock, and send
+      // packets not yet under way the new way. Returns the new bounds.
+      reroute: function (t, d, ease) {
+        var from = ends;
+        var to = { a: rectOf(a), b: rectOf(b) };
+        ends = to;
+        pts = route(to.a, to.b);
+        // The route between the ends where they are at each step of the
+        // move's ease, joined by linear tweens. Only tweens, no callbacks: a
+        // seek runs none, and the stage is driven by seeks.
+        var curve = gsap.parseEase(ease);
+        var steps = [];
+        for (var i = 0; i <= REROUTE_STEPS; i++) {
+          var k = curve(i / REROUTE_STEPS);
+          var q = square(route(lerpRect(from.a, to.a, k), lerpRect(from.b, to.b, k)));
+          steps.push({ d: pathOf(q), head: headAt(q), label: labelAt(q) });
         }
-        var trip = Math.max(0.5, Math.min(1.1, total / 700));
-        var runs = Math.max(1, Math.min(4, Math.floor((until - t) / (trip + 0.2))));
-        for (var r = 0; r < runs; r++) {
-          var t0 = t + r * (trip + 0.2);
-          var keys = [];
-          for (var j = 1; j < pts.length; j++) keys.push({ x: pts[j][0] - pts[0][0], y: pts[j][1] - pts[0][1], duration: (trip * legs[j - 1]) / total, ease: "none" });
-          tl.fromTo(packet, { x: 0, y: 0, opacity: 1 }, { keyframes: keys, immediateRender: false }, t0);
-          tl.to(packet, { opacity: 0, duration: 0.1 }, t0 + trip);
+        var step = d / REROUTE_STEPS;
+        for (var s = 0; s < REROUTE_STEPS; s++) {
+          var was = steps[s];
+          var now = steps[s + 1];
+          var when = t + s * step;
+          tl.fromTo(p, { attr: { d: was.d } }, { attr: { d: now.d }, duration: step, ease: "none", immediateRender: false }, when);
+          tl.fromTo(head, { attr: { transform: was.head } }, { attr: { transform: now.head }, duration: step, ease: "none", immediateRender: false }, when);
+          if (label) tl.fromTo(label, { left: was.label.left, top: was.label.top }, { left: now.label.left, top: now.label.top, duration: step, ease: "none", immediateRender: false }, when);
         }
+        var until = null;
+        var flying = false;
+        trips = trips.filter(function (run) {
+          if (run.t0 < t) {
+            if (run.t0 + run.trip > t) flying = true;
+            return true;
+          }
+          until = run.until;
+          run.tweens.forEach(function (tw) { tl.remove(tw); });
+          return false;
+        });
+        // A packet under way when the ends start moving leaves the old route.
+        if (flying) tl.to(packet, { opacity: 0, duration: 0.1 }, t);
+        if (until != null && until > t + d) flow(t + d, until);
+        return boxOf(pts);
       },
     };
   }
 
   // ---------- actions ----------
+  // Every node that belongs to an item (its body, an arrow's label and packets,
+  // badges and strikes added later) with where it was drawn, so dim, exit,
+  // shake and move treat the item as one thing.
+  function adopt(item, el) {
+    item.nodes.push({ el: el, home: { x: item.pos.x, y: item.pos.y } });
+  }
+  function nodesOf(item) {
+    return item.nodes.map(function (n) { return n.el; });
+  }
   function badge(item, good, t) {
     var r = rectOf(item);
     var el = h("div", "badge " + (good ? "ok" : "bad"), "left:" + (r.x + r.w - 26) + "px;top:" + (r.y - 22) + "px;width:52px;height:52px;z-index:4", item.layer, good ? CHECK : CROSS);
+    adopt(item, el);
     popIn(el, t, { from: 0.2, ease: "back.out(3)" });
     sfx("pop", t, -16);
   }
-  // Where the camera pushes in for a focus. Nothing else on screen may end up
-  // half in frame (that reads as a glitch): the view shifts to push it fully
-  // out while keeping the targets in, or takes it in too. A push-in that would
-  // barely zoom is skipped.
-  function focusView(targets, sc) {
-    var box = null;
-    function grow(q) {
-      box = box ? { x0: Math.min(box.x0, q.x), y0: Math.min(box.y0, q.y), x1: Math.max(box.x1, q.x + q.w), y1: Math.max(box.y1, q.y + q.h) } : { x0: q.x, y0: q.y, x1: q.x + q.w, y1: q.y + q.h };
-    }
-    targets.forEach(function (it) { grow(rectOf(it)); });
-    var others = Object.keys(sc.items)
-      .map(function (id) { return sc.items[id]; })
-      .filter(function (it) { return targets.indexOf(it) < 0 && !it.gone && it.pos && isFinite(it.pos.x); });
-    for (var pass = 0; pass < 6; pass++) {
-      var s = Math.min(1.7, Math.min((1920 * 0.68) / (box.x1 - box.x0), (1080 * 0.68) / (box.y1 - box.y0)));
-      if (s < 1.08) return null;
-      var hw = 960 / s, hh = 540 / s;
-      var cx = (box.x0 + box.x1) / 2, cy = (box.y0 + box.y1) / 2;
-      var cut = null;
-      for (var k = 0; k < others.length && !cut; k++) {
-        var q = rectOf(others[k]);
-        var ix = Math.max(0, Math.min(q.x + q.w, cx + hw) - Math.max(q.x, cx - hw));
-        var iy = Math.max(0, Math.min(q.y + q.h, cy + hh) - Math.max(q.y, cy - hh));
-        var frac = (ix * iy) / Math.max(1, q.w * q.h);
-        if (frac > 0.01 && frac < 0.97) cut = q;
-      }
-      if (!cut) return { s: s, cx: cx, cy: cy };
-      // Push it fully out along one axis if the targets still fit.
-      var shifted = false;
-      if (cut.x >= box.x1 && cut.x - 16 - 2 * hw >= box.x0 - 60) { cx = cut.x - 16 - hw; shifted = true; }
-      else if (cut.x + cut.w <= box.x0 && cut.x + cut.w + 16 + 2 * hw <= box.x1 + 60) { cx = cut.x + cut.w + 16 + hw; shifted = true; }
-      else if (cut.y >= box.y1 && cut.y - 16 - 2 * hh >= box.y0 - 40) { cy = cut.y - 16 - hh; shifted = true; }
-      else if (cut.y + cut.h <= box.y0 && cut.y + cut.h + 16 + 2 * hh <= box.y1 + 40) { cy = cut.y + cut.h + 16 + hh; shifted = true; }
-      if (shifted) {
-        var clean = others.every(function (it) {
-          var r = rectOf(it);
-          var jx = Math.max(0, Math.min(r.x + r.w, cx + hw) - Math.max(r.x, cx - hw));
-          var jy = Math.max(0, Math.min(r.y + r.h, cy + hh) - Math.max(r.y, cy - hh));
-          var f = (jx * jy) / Math.max(1, r.w * r.h);
-          return f <= 0.01 || f >= 0.97;
-        });
-        if (clean) return { s: s, cx: cx, cy: cy };
-      }
-      grow(cut);
-    }
-    return null;
+  function camTo(sc, v, t, d) {
+    if (t == null) tl.set(sc.cam, { scale: v.s, x: v.x, y: v.y }, sc.tIn);
+    else tl.to(sc.cam, { scale: v.s, x: v.x, y: v.y, duration: d || 0.9, ease: "power2.inOut" }, t);
+    sc.view = v;
   }
-  function applyAction(a, t, sc, bi) {
+  function applyAction(a, t, sc) {
     var items = sc.items;
     var targets = (a.target || []).map(function (id) { return items[id]; }).filter(Boolean);
     var first = targets[0];
     switch (a.do) {
       case "highlight":
         if (!first) return;
-        if (first.built.bar && a.lines && a.lines.length) {
+        if (first.built.highlight) first.built.highlight(t);
+        else if (first.built.bar && a.lines && a.lines.length) {
           a.lines.forEach(function (n) { var b = first.built.bar(n); if (b) tl.fromTo(b, { scaleX: 0 }, { scaleX: 1, duration: 0.3, ease: "power3.out" }, t); });
         } else if (first.built.rowBar && a.rows && a.rows.length) {
           a.rows.forEach(function (n) { var b = first.built.rowBar(n); if (b) tl.fromTo(b, { scaleX: 0 }, { scaleX: 1, duration: 0.3, ease: "power3.out" }, t); });
@@ -858,29 +778,50 @@ function build() {
         sfx("tick", t, -17);
         break;
       case "dim":
-        targets.forEach(function (it) { tl.to(it.el, { opacity: 0.28, duration: 0.3 }, t); });
+        targets.forEach(function (it) { tl.to(nodesOf(it), { opacity: 0.28, duration: 0.3 }, t); });
         break;
       case "restore":
-        targets.forEach(function (it) { tl.to(it.el, { opacity: 1, duration: 0.3 }, t); });
+        targets.forEach(function (it) {
+          tl.to(nodesOf(it), { opacity: 1, duration: 0.3 }, t);
+          it.gone = false;
+        });
         break;
       case "exit":
-        targets.forEach(function (it) { tl.to(it.el, { opacity: 0, scale: 0.9, duration: 0.25, ease: "power2.in" }, t); });
+        targets.forEach(function (it) {
+          tl.to(nodesOf(it), { opacity: 0, duration: 0.25, ease: "power2.in" }, t);
+          // An arrow spans the canvas; shrinking it would slide it sideways.
+          if (!it.arrow) tl.to(it.el, { scale: 0.9, duration: 0.25, ease: "power2.in" }, t);
+          it.gone = true;
+          // An arrow leaves with either of its ends: a line to nothing reads
+          // as a mistake.
+          Object.keys(items).forEach(function (id) {
+            var arrow = items[id];
+            if (!arrow.arrow || arrow.gone || (arrow.built.from !== it && arrow.built.to !== it)) return;
+            tl.to(nodesOf(arrow), { opacity: 0, duration: 0.25, ease: "power2.in" }, t);
+            arrow.gone = true;
+          });
+        });
         break;
       case "strike":
         if (!first) return;
         var r = rectOf(first);
         var line = h("div", "", "position:absolute;left:" + (r.x + 10) + "px;top:" + (r.y + r.h / 2 - 2) + "px;width:" + (r.w - 20) + "px;height:5px;border-radius:3px;background:#b3263a;transform-origin:left center;z-index:4", first.layer);
+        adopt(first, line);
         tl.fromTo(line, { scaleX: 0 }, { scaleX: 1, duration: 0.3, ease: "power2.out" }, t);
         tl.to(first.el, { opacity: 0.55, duration: 0.3 }, t + 0.1);
         (first.strikes = first.strikes || []).push(line);
         sfx("tick", t, -16);
         break;
       case "pulse":
-        targets.forEach(function (it) { tl.to(it.el, { scale: 1.07, duration: 0.15, yoyo: true, repeat: 1, ease: "power2.out" }, t); });
+        targets.forEach(function (it) {
+          if (it.built.pulse) it.built.pulse(t);
+          else tl.to(it.el, { scale: 1.07, duration: 0.15, yoyo: true, repeat: 1, ease: "power2.out" }, t);
+        });
         sfx("tick", t, -17);
         break;
       case "shake":
-        if (first) tl.to(first.el, { x: 10, duration: 0.05, yoyo: true, repeat: 5, ease: "none" }, t);
+        // Relative, so an element moved earlier shakes where it now stands.
+        if (first) tl.to(nodesOf(first), { x: "+=10", duration: 0.05, yoyo: true, repeat: 5, ease: "none" }, t);
         break;
       case "check":
       case "cross":
@@ -892,8 +833,10 @@ function build() {
         var old = first.current;
         // New words are not struck out: a replacement clears any strike.
         if (first.strikes && first.strikes.length) {
-          tl.to(first.strikes, { opacity: 0, duration: 0.2 }, t);
+          var struck = first.strikes;
+          tl.to(struck, { opacity: 0, duration: 0.2 }, t);
           tl.to(first.el, { opacity: 1, duration: 0.25 }, t + 0.1);
+          first.nodes = first.nodes.filter(function (n) { return struck.indexOf(n.el) < 0; });
           first.strikes = [];
         }
         tl.to(old, { opacity: 0, y: -22, duration: 0.2, ease: "power2.in" }, t);
@@ -911,9 +854,16 @@ function build() {
         sfx("tick", t, -16);
         break;
       case "move":
-        if (!first) return;
-        tl.to(first.el, { x: (Number(a.x) - first.home.x) * U, y: (Number(a.y) - first.home.y) * U, duration: 0.55, ease: "power3.inOut" }, t);
+        if (!first || first.arrow) return;
+        first.nodes.forEach(function (n) {
+          tl.to(n.el, { x: (Number(a.x) - n.home.x) * U, y: (Number(a.y) - n.home.y) * U, duration: 0.55, ease: "power3.inOut" }, t);
+        });
         first.pos = { x: Number(a.x), y: Number(a.y), w: first.pos.w, h: first.pos.h };
+        // Arrows joined to it follow on the same tween, packets included.
+        Object.keys(items).forEach(function (id) {
+          var it = items[id];
+          if (it.arrow && (it.built.from === first || it.built.to === first)) it.pos = it.built.reroute(t, 0.55, "power3.inOut");
+        });
         break;
       case "type":
         if (!first || !first.built.pending || !first.built.pending.length) return;
@@ -935,12 +885,14 @@ function build() {
       case "focus":
         if (!targets.length) return;
         var view = focusView(targets, sc);
-        if (!view) break;
-        tl.to(sc.cam, { scale: view.s, x: 960 - view.s * view.cx, y: 540 - view.s * view.cy, duration: 0.75, ease: "power3.inOut" }, t);
+        // A push-in that would barely zoom past the framing is skipped.
+        if (!view || view.s < sc.view.s * 1.08) break;
+        tl.to(sc.cam, { scale: view.s, x: F.fx - view.s * view.cx, y: F.fy - view.s * view.cy, duration: 0.75, ease: "power3.inOut" }, t);
+        sc.view = { s: view.s, x: F.fx - view.s * view.cx, y: F.fy - view.s * view.cy };
         sc.focused = true;
         break;
       case "reset":
-        tl.to(sc.cam, { scale: 1, x: 0, y: 0, duration: 0.65, ease: "power3.inOut" }, t);
+        camTo(sc, autoView(sc), t, 0.65);
         sc.focused = false;
         break;
     }
@@ -960,22 +912,32 @@ function build() {
     var sec = h("section", "scene", "", stage);
     var inner = h("div", "inner", "", sec);
     var drift = h("div", "", "position:absolute;inset:0;transform-origin:50% 46%", inner);
-    var cam = h("div", "", "position:absolute;left:0;top:0;width:1920px;height:1080px;transform-origin:0 0", drift);
+    var cam = h("div", "", "position:absolute;left:0;top:0;width:" + F.w + "px;height:" + F.h + "px;transform-origin:0 0", drift);
     sc.cam = cam;
-    sc.items = {};
+    sc.items = dict();
+    sc.view = { s: 1, x: 0, y: 0 };
     tl.set(sec, { visibility: "visible" }, sc.tIn);
     transitionIn(inner, sc.transition, sc.tIn);
     if (!RENDER) tl.fromTo(drift, { scale: 1 }, { scale: 1.015, duration: Math.max(0.5, sc.tOut - sc.tIn), ease: "none" }, sc.tIn);
     transitionOut(inner, (scenes[k + 1] && scenes[k + 1].transition) || "zoom", sc.tOut);
     tl.set(sec, { visibility: "hidden" }, sc.tOut);
-    sfxScene = k;
+    sound.scene(k);
     if (k > 0) sfx("whoosh", sc.tIn - 0.04, -17, 1, true);
 
     // Actions that later need prepared DOM (swaps, counts, typed lines).
-    var future = {};
+    var future = dict();
     sc.beats.forEach(function (bi) {
       beats[bi].actions.forEach(function (a) {
         (a.target || []).forEach(function (id) { (future[id] = future[id] || []).push(a); });
+      });
+    });
+
+    // Every card the scene will hold, for arrows to route around. A browser
+    // window frames other cards, so arrows may cross it.
+    var cards = [];
+    sc.beats.forEach(function (bi) {
+      beats[bi].elements.forEach(function (e) {
+        if (e.kind !== "arrow" && e.kind !== "browser") cards.push({ id: e.id, x: e.x * U, y: e.y * U, w: e.w * U, h: e.h * U });
       });
     });
 
@@ -983,22 +945,31 @@ function build() {
     sc.beats.forEach(function (bi, j) {
       var beat = beats[bi];
       var floor = j === 0 ? sc.tIn + 0.3 : TB[bi].start - 0.05;
-      // A beat that adds elements while the camera is pushed in pulls back
-      // first, so nothing new appears off camera.
-      if (j > 0 && sc.focused && beat.elements.length && !beat.actions.some(function (a) { return a.do === "focus"; })) {
-        tl.to(sc.cam, { scale: 1, x: 0, y: 0, duration: 0.6, ease: "power3.inOut" }, TB[bi].start - 0.25);
-        sc.focused = false;
-      }
+      // Cue times follow the plan's order, but every arrow is built after the
+      // elements it joins, wherever the designer listed it.
       var stagger = 0;
-      beat.elements.forEach(function (e) {
+      // A feed cut's first frame already shows its opening beat.
+      var opening = FEED && k === 0 && j === 0;
+      var timed = beat.elements.map(function (e) {
+        if (opening) return { e: e, t: 0 };
         var cued = cueTime(bi, e.at);
-        var t = Math.max(floor, cued == null ? TB[bi].start + 0.06 + 0.13 * stagger++ : cued - 0.04);
+        return { e: e, t: Math.max(floor, cued == null ? TB[bi].start + 0.06 + 0.13 * stagger++ : cued - 0.04) };
+      });
+      var arrowsLast = timed.filter(function (x) { return x.e.kind !== "arrow"; }).concat(timed.filter(function (x) { return x.e.kind === "arrow"; }));
+      arrowsLast.forEach(function (x) {
+        var e = x.e;
+        var t = x.t;
         var built;
-        if (e.kind === "arrow") built = buildArrow(e, cam, sc.items);
-        else if (B[e.kind]) built = B[e.kind](e, cam, future[e.id] || []);
+        if (e.kind === "arrow") {
+          built = buildArrow(e, cam, sc.items, cards);
+          // Never drawn before both of its ends are on screen.
+          if (built) t = Math.max(t, sc.items[e.from].t, sc.items[e.to].t);
+        } else if (B[e.kind]) built = B[e.kind](e, cam, future[e.id] || []);
         if (!built) return;
         empty = false;
-        var item = { built: built, el: built.el, pos: { x: e.x, y: e.y, w: e.w, h: e.h }, home: { x: e.x, y: e.y }, layer: cam };
+        var pos = built.box || { x: e.x, y: e.y, w: e.w, h: e.h };
+        var item = { built: built, el: built.el, t: t, arrow: Boolean(built.arrow), pos: pos, layer: cam, nodes: [] };
+        (built.nodes || [built.el]).forEach(function (n) { adopt(item, n); });
         if (built.label && built.labelHost) {
           var swaps = (future[e.id] || []).filter(function (a) { return a.do === "replace"; });
           item.current = built.label;
@@ -1026,23 +997,43 @@ function build() {
               clone.style.width = room + "px";
             } else clone.style.width = Math.max(lab.offsetWidth, host.clientWidth - lab.offsetLeft - (parseFloat(hs.paddingRight) || 0)) + "px";
             fitText(clone, host.clientHeight - lab.offsetTop, 12);
+            // A replacement with fewer lines stands where the middle of the
+            // old label was, not at its top.
+            if (e.kind === "box" && clone.offsetHeight < lab.offsetHeight) clone.style.top = lab.offsetTop + (lab.offsetHeight - clone.offsetHeight) / 2 + "px";
             return clone;
           });
         }
         sc.items[e.id] = item;
         built.enter(t);
+        // An arrow marked "flow" runs packets once drawn, unless a flow action
+        // starts them on a later word.
+        if (e.flow && built.flow && !(future[e.id] || []).some(function (a) { return a.do === "flow"; })) built.flow(t + 0.45, sc.tOut - 0.3);
       });
+      // Every beat is framed as it starts, unless the camera is pushed in and
+      // nothing new appears (a focus holds across such beats).
+      if (!(j > 0 && sc.focused && !beat.elements.length)) {
+        camTo(sc, autoView(sc), j === 0 ? null : TB[bi].start - 0.3);
+        sc.focused = false;
+      }
+      var left = null;
       beat.actions.forEach(function (a) {
         var cued = cueTime(bi, a.at);
         var t = Math.max(floor + 0.35, cued == null ? (TB[bi].start + TB[bi].end) / 2 : cued - 0.03);
-        applyAction(a, Math.min(t, sc.tOut - 0.35), sc, bi);
+        t = Math.min(t, sc.tOut - 0.35);
+        applyAction(a, t, sc);
+        if (a.do === "exit") left = left == null ? t : Math.max(left, t);
+        else if (a.do === "focus" || a.do === "reset") left = null;
       });
+      // What is left after something leaves is framed again, so the scene
+      // never sits small beside the space it left.
+      if (left != null && !sc.focused && left + 0.9 < sc.tOut) camTo(sc, autoView(sc), left + 0.1, 0.7);
     });
 
     // A scene the designer never delivered still says its line on screen.
     if (empty) {
       var fallback = sc.beats.map(function (bi) { return beats[bi].narration; }).join(" ");
-      var built = B.heading({ text: fallback, x: 1, y: 2.2, w: 14, h: 4.5 }, cam);
+      var spot = F.h > F.w ? { x: F.L / U, y: F.TOP / U + 0.4, w: (F.R - F.L) / U, h: Math.min(6, (F.BOT - F.TOP) / U - 0.8) } : { x: 1, y: 2.2, w: 14, h: 4.5 };
+      var built = B.heading(Object.assign({ text: fallback }, spot), cam);
       built.enter(sc.tIn + 0.3);
     }
   });
@@ -1058,25 +1049,32 @@ function build() {
   tl.to(label, { opacity: 0, duration: 0.3 }, endAt - 0.1);
 
   var rail = document.getElementById("rail");
-  var hair = h("div", "", "position:absolute;left:0;bottom:0;width:1920px;height:6px;background:#7a2be0;transform-origin:left center", rail);
+  var hair = h("div", "", "position:absolute;left:0;bottom:0;width:" + F.w + "px;height:6px;background:#7a2be0;transform-origin:left center", rail);
   tl.fromTo(hair, { scaleX: 0 }, { scaleX: 1, duration: DUR, ease: "none" }, 0);
 
   var end = h("section", "scene", "", stage);
-  var endInner = h("div", "inner", "display:flex;flex-direction:column;justify-content:center;padding:0 150px", end);
+  // A tall frame keeps the end card inside the area its captions leave free.
+  var tall = F.h > F.w;
+  var endPad = tall ? F.L + 20 : 150;
+  var endW = F.w - 2 * endPad;
+  var endInner = h("div", "inner", "display:flex;flex-direction:column;justify-content:center;padding:0 " + endPad + "px" + (tall ? ";top:" + F.TOP + "px;bottom:" + (F.h - F.BOT) + "px" : ""), end);
   var outro = S.outro || S.title;
-  var os = fitSize(outro.replace(/\*/g, ""), function (s) { return "400 " + s + 'px "Instrument Serif"'; }, 1620, 420, 1.02, 150, 60);
-  var line = h("div", "serif", "font-size:" + os + "px;line-height:1.02;letter-spacing:-0.02em;max-width:1620px", endInner);
+  var os = fitSize(outro.replace(/\*/g, ""), function (s) { return "400 " + s + 'px "Instrument Serif"'; }, endW, tall ? 620 : 420, 1.02, tall ? 132 : 150, tall ? 52 : 60);
+  var line = h("div", "serif", "font-size:" + os + "px;line-height:1.02;letter-spacing:-0.02em;max-width:" + endW + "px", endInner);
   var words = accentWords(outro).map(function (w) {
     var sp = h("span", "hw", "", line, w);
     line.appendChild(document.createTextNode(" "));
     return sp;
   });
-  var sign = h("div", "", "margin-top:56px;display:flex;align-items:center;gap:18px", endInner, GLYPH + '<span class="mono" style="font:600 28px/1 \'Geist Mono\'">github.com/' + esc(M.owner + "/" + M.repo) + '</span><span style="font:400 24px/1 Geist;color:var(--ink-2);margin-left:6px">· made with GitDiagram</span>');
+  // A feed cut signs off with where to see this diagram, big enough to read on a phone.
+  var sign = FEED
+    ? h("div", "", "margin-top:56px;display:flex;align-items:center;gap:18px;transform-origin:0 50%", endInner, GLYPH + '<span class="mono" style="font:600 42px/1.1 \'Geist Mono\';color:var(--purple-deep);word-break:break-all">gitdiagram.com/' + esc(M.owner + "/" + M.repo) + "</span>")
+    : h("div", "", "margin-top:56px;display:flex;flex-wrap:wrap;align-items:center;gap:18px", endInner, GLYPH + '<span class="mono" style="font:600 28px/1 \'Geist Mono\'">github.com/' + esc(M.owner + "/" + M.repo) + '</span><span style="font:400 24px/1 Geist;color:var(--ink-2);margin-left:6px">· made with GitDiagram</span>');
   tl.set(end, { visibility: "visible" }, endAt);
   words.forEach(function (sp, k) { tl.fromTo(sp, { opacity: 0, y: 40 }, { opacity: 1, y: 0, duration: 0.5, ease: "power3.out" }, endAt + 0.1 + k * 0.06); });
   riseIn(sign, endAt + 0.5, { y: 20, d: 0.5 });
 
-  mixSfx();
+  sound.mix();
   tl.to({}, { duration: 0.01 }, DUR - 0.01);
   window.__timelines.main = tl;
 }

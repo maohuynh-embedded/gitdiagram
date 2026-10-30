@@ -1,3 +1,5 @@
+import { readSSEStream } from "~/features/diagram/sse";
+import { videoFileUrl, type VideoFileFormat } from "./file-url";
 import type {
   VideoArtifact,
   VideoGenerationEvent,
@@ -13,9 +15,52 @@ export interface ExplainerVideoState {
   paused: VideoPausedReason | null;
   /** This visitor may make videos from any device, tablets included. */
   anyDevice: boolean;
+  /** No video yet, but one is being made for this repo right now. */
+  generating: boolean;
+  /** Held back from free videos, this visitor may buy this one. */
+  payable: boolean;
+  /** What buying it costs, in US cents; null when it cannot be bought. */
+  priceCents: number | null;
+  /** The operator is previewing the page as a visitor from this country. */
+  viewingAs: string | null;
 }
 
 export type RenderFormat = "landscape" | "vertical";
+
+/**
+ * Why the server turned a video down, when it says: another run holds the
+ * repository's lock, or the repository already has a video.
+ */
+export type VideoRequestReason = "generating" | "exists";
+
+/** A video request the server turned down before any stream started. */
+export class VideoRequestError extends Error {
+  readonly status: number;
+  /** The video was replaced after this page loaded it. */
+  readonly stale: boolean;
+  readonly reason: VideoRequestReason | null;
+
+  constructor(
+    message: string,
+    status: number,
+    stale = false,
+    reason: VideoRequestReason | null = null,
+  ) {
+    super(message);
+    this.name = "VideoRequestError";
+    this.status = status;
+    this.stale = stale;
+    this.reason = reason;
+  }
+}
+
+/** The stream closed before saying how the work ended; it may still have finished. */
+export class VideoStreamEndedError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "VideoStreamEndedError";
+  }
+}
 
 export async function fetchExplainerVideo(
   username: string,
@@ -30,20 +75,58 @@ export async function fetchExplainerVideo(
     canGenerate?: boolean;
     paused?: VideoPausedReason | null;
     anyDevice?: boolean;
+    generating?: boolean;
+    payable?: boolean;
+    priceCents?: number | null;
+    viewingAs?: string | null;
     error?: string;
   };
   if (!response.ok || !body.ok)
     throw new Error(body.error ?? "Could not load the explainer video.");
+  const video = body.video ?? null;
   return {
-    video: body.video ?? null,
+    video,
     canGenerate: Boolean(body.canGenerate),
     paused: body.paused ?? null,
     anyDevice: Boolean(body.anyDevice),
+    generating: !video && body.generating === true,
+    payable: !video && body.payable === true,
+    priceCents:
+      !video && typeof body.priceCents === "number" ? body.priceCents : null,
+    viewingAs: typeof body.viewingAs === "string" ? body.viewingAs : null,
   };
 }
 
-/** POST a JSON body and relay each server-sent event from the response. */
-async function streamEvents<T>(
+/** A price in US cents as the page shows it: "$3", or "$2.50". */
+export function formatPrice(cents: number): string {
+  return cents % 100 === 0 ? `$${cents / 100}` : `$${(cents / 100).toFixed(2)}`;
+}
+
+/** Open a checkout for a repository's video; answers where to send the payer. */
+export async function startVideoCheckout(
+  username: string,
+  repo: string,
+): Promise<string> {
+  const response = await fetch("/api/video/checkout", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ username, repo }),
+  });
+  const body = (await response.json().catch(() => ({}))) as {
+    url?: string;
+    error?: string;
+  };
+  if (!response.ok || !body.url)
+    throw new Error(body.error ?? "Could not open the checkout.");
+  return body.url;
+}
+
+/**
+ * POST a JSON body and relay each server-sent event from the response. A
+ * stream must end with a `complete` or `error` event: one that closes without
+ * either rejects with {@link VideoStreamEndedError}.
+ */
+async function streamEvents<T extends { status: string }>(
   url: string,
   payload: unknown,
   onEvent: (event: T) => void,
@@ -59,73 +142,135 @@ async function streamEvents<T>(
   if (!response.ok || !response.body) {
     const body = (await response.json().catch(() => ({}))) as {
       error?: string;
+      stale?: boolean;
+      reason?: string;
     };
-    throw new Error(body.error ?? fallbackError);
+    throw new VideoRequestError(
+      body.error ?? fallbackError,
+      response.status,
+      body.stale === true,
+      body.reason === "generating" || body.reason === "exists"
+        ? body.reason
+        : null,
+    );
   }
-  const reader = response.body.getReader();
-  const decoder = new TextDecoder();
-  let buffer = "";
-  for (;;) {
-    const { done, value } = await reader.read();
-    if (done) break;
-    buffer += decoder.decode(value, { stream: true });
-    let boundary = buffer.indexOf("\n\n");
-    while (boundary !== -1) {
-      const frame = buffer.slice(0, boundary);
-      buffer = buffer.slice(boundary + 2);
-      for (const line of frame.split("\n")) {
-        if (line.startsWith("data: ")) onEvent(JSON.parse(line.slice(6)) as T);
-      }
-      boundary = buffer.indexOf("\n\n");
-    }
-  }
+  let finished = false;
+  await readSSEStream<T>(response.body, (event) => {
+    onEvent(event);
+    finished = event.status === "complete" || event.status === "error";
+    // Nothing follows the final event.
+    return !finished;
+  });
+  if (!finished) throw new VideoStreamEndedError(fallbackError);
 }
 
-/** Start generation and relay each server-sent progress event. */
+/**
+ * Start generation and relay each server-sent progress event. `paid` is the
+ * checkout session a payer came back from.
+ */
 export function streamExplainerVideo(
   username: string,
   repo: string,
   onEvent: (event: VideoGenerationEvent) => void,
   signal?: AbortSignal,
+  paid?: string,
 ): Promise<void> {
   return streamEvents(
     "/api/video/generate",
-    { username, repo },
+    paid ? { username, repo, paid } : { username, repo },
     onEvent,
     "Could not start video generation.",
     signal,
   );
 }
 
-/** Make (or reuse) a video's MP4 and relay render progress. */
-export function streamExplainerRender(
+/** How long to wait before asking again for an MP4 that is still being made. */
+const RENDER_ASK_AGAIN_MS = 4_000;
+/** A render is over within 13 minutes; past this, asking again cannot help. */
+const RENDER_WAIT_LIMIT_MS = 14 * 60_000;
+/** Tries a server that says it is briefly unavailable (a deploy) gets. */
+const RENDER_UNAVAILABLE_TRIES = 3;
+
+const pause = (ms: number, signal?: AbortSignal) =>
+  new Promise<void>((resolve) => {
+    const timer = setTimeout(done, ms);
+    function done() {
+      clearTimeout(timer);
+      signal?.removeEventListener("abort", done);
+      resolve();
+    }
+    signal?.addEventListener("abort", done);
+  });
+
+/**
+ * Make (or reuse) the MP4 of the video on screen and relay render progress.
+ * `version` is that video's `createdAt`; if the video has been replaced since,
+ * the server refuses with a stale {@link VideoRequestError}.
+ *
+ * The server finishes and stores a render whatever happens to this
+ * connection, so losing sight of one is not a failure: when the stream closes
+ * early or the connection drops (a deploy cuts open streams), or the server
+ * says the MP4 is being made right now, this asks again every few seconds
+ * until the file is there (the answer is then "complete" at once) or the
+ * render is given up on.
+ */
+export async function streamExplainerRender(
   username: string,
   repo: string,
   format: RenderFormat,
+  version: string,
   onEvent: (event: VideoRenderEvent) => void,
   signal?: AbortSignal,
+  { askAgainMs = RENDER_ASK_AGAIN_MS }: { askAgainMs?: number } = {},
 ): Promise<void> {
-  return streamEvents(
-    "/api/video/render",
-    { username, repo, format },
-    onEvent,
-    "Could not make the MP4.",
-    signal,
-  );
+  const started = Date.now();
+  let unavailable = 0;
+  for (;;) {
+    try {
+      return await streamEvents(
+        "/api/video/render",
+        { username, repo, format, v: version },
+        onEvent,
+        "Could not make the MP4.",
+        signal,
+      );
+    } catch (error) {
+      if (signal?.aborted) throw error;
+      const lostSight =
+        error instanceof VideoStreamEndedError || error instanceof TypeError;
+      const refused = error instanceof VideoRequestError && !error.stale;
+      const stillWorking =
+        lostSight ||
+        (refused && error.status === 409) ||
+        (refused &&
+          error.status === 503 &&
+          ++unavailable <= RENDER_UNAVAILABLE_TRIES);
+      if (!stillWorking || Date.now() - started > RENDER_WAIT_LIMIT_MS)
+        throw error;
+      await pause(askAgainMs, signal);
+      if (signal?.aborted) throw error;
+    }
+  }
 }
 
-/** Where a stored render downloads from; the version pins the exact file. */
+/**
+ * Where a stored render downloads from; the version pins the exact file.
+ * `posterAt` (when the poster was made) stamps poster and still URLs.
+ */
 export function renderFileUrl(
   video: VideoArtifact,
-  format: RenderFormat | "poster" | "still",
+  format: VideoFileFormat,
+  posterAt?: number | null,
 ): string {
-  const params = new URLSearchParams({
-    username: video.meta.owner,
-    repo: video.meta.repo,
+  return videoFileUrl(
+    {
+      owner: video.meta.owner,
+      repo: video.meta.repo,
+      createdAt: video.createdAt,
+      posterAt,
+    },
     format,
-    v: video.createdAt,
-  });
-  return `/api/video/file?${params.toString()}`;
+  );
 }
 
 /** The shareable watch page for a repository's video. */

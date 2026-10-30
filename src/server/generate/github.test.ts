@@ -11,7 +11,6 @@ vi.mock("~/server/github-auth", () => ({
 import {
   GITHUB_REQUEST_TIMEOUT_MS,
   getGithubData,
-  MAX_INCLUDED_FILE_TREE_CHARACTERS,
   MAX_README_BYTES,
   REPOSITORY_TOO_LARGE_ERROR,
 } from "~/server/generate/github";
@@ -53,40 +52,137 @@ function createGitHubFetch(
 describe("getGithubData repository input bounds", () => {
   beforeEach(() => {
     vi.restoreAllMocks();
+    // The GitHub client logs structured JSON on failures and public fallbacks;
+    // keep it out of the test output.
+    vi.spyOn(console, "error").mockImplementation(() => undefined);
+    vi.spyOn(console, "info").mockImplementation(() => undefined);
     getGitHubApiHeaders.mockReset();
     getGitHubApiHeaders.mockResolvedValue({
       Accept: "application/vnd.github+json",
     });
   });
 
-  it("rejects a truncated recursive tree while fetching inputs concurrently", async () => {
+  it("keeps GitHub's partial listing of a truncated recursive tree", async () => {
     const fetchMock = createGitHubFetch({
       truncated: true,
-      tree: [{ path: "src/main.ts" }],
+      tree: [{ path: "src/main.ts", type: "blob" }],
     });
     vi.stubGlobal("fetch", fetchMock);
 
-    await expect(getGithubData("acme", "demo")).rejects.toThrow(
-      REPOSITORY_TOO_LARGE_ERROR,
-    );
-    expect(fetchMock).toHaveBeenCalledTimes(3);
-    expect(fetchMock).toHaveBeenCalledWith(
-      expect.stringContaining("/readme"),
-      expect.anything(),
-    );
+    const data = await getGithubData("acme", "demo");
+
+    // Reading the missing top level failed (this mock knows no such URL), so
+    // the listing stays as GitHub returned it, still marked partial.
+    expect(data.fileTree).toBe("src/main.ts");
+    expect(data.pathTypes.get("src/main.ts")).toBe("blob");
+    expect(data.treeTruncated).toBe(true);
+    expect(fetchMock).toHaveBeenCalledTimes(4);
   });
 
-  it("rejects an oversized filtered file tree", async () => {
-    const fetchMock = createGitHubFetch({
-      truncated: false,
-      tree: [{ path: "a".repeat(MAX_INCLUDED_FILE_TREE_CHARACTERS + 1) }],
+  it("fills in top-level folders a truncated listing left out, one level deep", async () => {
+    const sha = (char: string) => char.repeat(40);
+    const base = createGitHubFetch({
+      truncated: true,
+      tree: [
+        { path: "src", type: "tree", sha: sha("1") },
+        {
+          path: "src/main.ts",
+          type: "blob",
+          sha: sha("2"),
+          size: 10,
+          mode: "100644",
+        },
+      ],
+    });
+    const fetchMock = vi.fn(async (input: string | URL | Request) => {
+      const url = String(input);
+      if (url.endsWith("/git/trees/main"))
+        return jsonResponse({
+          truncated: false,
+          tree: [
+            { path: "src", type: "tree", sha: sha("1") },
+            { path: "web", type: "tree", sha: sha("3") },
+            { path: "worker", type: "tree", sha: sha("4") },
+            {
+              path: "package.json",
+              type: "blob",
+              sha: sha("5"),
+              size: 20,
+              mode: "100644",
+            },
+          ],
+        });
+      if (url.endsWith(`/git/trees/${sha("3")}`))
+        return jsonResponse({
+          truncated: false,
+          tree: [
+            {
+              path: "server.ts",
+              type: "blob",
+              sha: sha("6"),
+              size: 30,
+              mode: "100644",
+            },
+            { path: "components", type: "tree", sha: sha("7") },
+          ],
+        });
+      if (url.endsWith(`/git/trees/${sha("4")}`))
+        return jsonResponse({ message: "boom" }, 500);
+      return base(input);
     });
     vi.stubGlobal("fetch", fetchMock);
 
-    await expect(getGithubData("acme", "demo")).rejects.toThrow(
-      REPOSITORY_TOO_LARGE_ERROR,
-    );
+    const data = await getGithubData("acme", "demo");
+
+    expect(data.treeTruncated).toBe(true);
+    expect(data.fileTree.split("\n")).toEqual([
+      "src",
+      "src/main.ts",
+      "web",
+      "worker",
+      "package.json",
+      "web/server.ts",
+      "web/components",
+    ]);
+    expect(data.pathTypes.get("web/components")).toBe("tree");
+    expect(data.sourceBlobs?.get("web/server.ts")).toEqual({
+      sha: sha("6"),
+      size: 30,
+    });
+    // The folder already listed is not read again.
+    expect(
+      fetchMock.mock.calls.filter(([url]) => String(url).includes(sha("1"))),
+    ).toEqual([]);
+  });
+
+  it("does not read more of a complete listing", async () => {
+    const fetchMock = createGitHubFetch({
+      truncated: false,
+      tree: [{ path: "src/main.ts", type: "blob" }],
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    const data = await getGithubData("acme", "demo");
+
+    expect(data.treeTruncated).toBe(false);
     expect(fetchMock).toHaveBeenCalledTimes(3);
+  });
+
+  it("accepts a file tree far larger than the model prompt excerpt", async () => {
+    const paths = Array.from(
+      { length: 40_000 },
+      (_, index) => `packages/module-${index}/src/implementation-${index}.ts`,
+    );
+    const fetchMock = createGitHubFetch({
+      truncated: false,
+      tree: paths.map((path) => ({ path, type: "blob" })),
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    const data = await getGithubData("acme", "demo");
+
+    expect(data.fileTree.length).toBeGreaterThan(1_000_000);
+    expect(data.pathTypes.size).toBe(paths.length);
   });
 
   it("rejects an oversized README from GitHub's size metadata", async () => {
@@ -163,6 +259,7 @@ describe("getGithubData repository input bounds", () => {
         ["src/user.login.ts", "blob"],
         ["src/main.ts", "blob"],
       ]),
+      treeTruncated: false,
     });
     expect(timeoutSpy).toHaveBeenCalledTimes(3);
     expect(timeoutSpy).toHaveBeenCalledWith(GITHUB_REQUEST_TIMEOUT_MS);
@@ -194,6 +291,35 @@ describe("getGithubData repository input bounds", () => {
     await expect(getGithubData("acme", "demo")).resolves.toMatchObject({
       fileTree: "src/main.ts",
       readme: "",
+    });
+  });
+
+  it("passes the repository's display metadata through", async () => {
+    const fetchMock = vi.fn(async (input: string | URL | Request) => {
+      const url = String(input);
+      if (url.endsWith("/repos/acme/demo")) {
+        return jsonResponse({
+          default_branch: "main",
+          private: false,
+          description: "Demo app",
+          language: "TypeScript",
+          topics: ["cli", 3],
+        });
+      }
+      if (url.includes("/git/trees/main?recursive=1")) {
+        return jsonResponse({
+          truncated: false,
+          tree: [{ path: "src/main.ts", type: "blob" }],
+        });
+      }
+      return jsonResponse({ message: "Not Found" }, 404);
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    await expect(getGithubData("acme", "demo")).resolves.toMatchObject({
+      description: "Demo app",
+      language: "TypeScript",
+      topics: ["cli"],
     });
   });
 

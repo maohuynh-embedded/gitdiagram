@@ -1,6 +1,18 @@
 import "server-only";
 
-import type { VideoAudience } from "~/features/admin/types";
+import { createHash } from "node:crypto";
+import {
+  DEFAULT_LIMITED_COUNTRY_SHARE,
+  isLimitedCountry,
+} from "~/features/admin/limited-countries";
+import { isPriorityPlace } from "~/features/admin/priority-places";
+import type {
+  LiveControls,
+  PriorityPlaces,
+  VideoAudience,
+} from "~/features/admin/types";
+import { networkOf } from "~/lib/network";
+import { requestGeo } from "~/server/http/vercel-geo";
 
 // Who may make new explainer videos during early access: anyone, on any
 // device, in the places GitDiagram's most valuable audience lives. It mirrors
@@ -11,30 +23,12 @@ import type { VideoAudience } from "~/features/admin/types";
 // report, so this is an access rule, not a security boundary: VPNs and
 // spoofed user agents get through. The daily budgets still bound spend.
 
-const REGIONS: Record<string, string[]> = {
-  US: ["CA", "WA", "NY"],
-  CA: ["ON", "BC"],
-};
-
-// "Anywhere around London": within 60 km of central London.
-const LONDON = { lat: 51.5072, lon: -0.1276, km: 60 };
+// The places themselves live in one shared rule, which the /admin dashboard's
+// "Priority places" count also uses.
 
 const MOBILE =
   /Mobi|Android|iPhone|iPad|iPod|Windows Phone|webOS|BlackBerry|Opera Mini|IEMobile|Silk|Kindle/i;
 const DESKTOP = /Macintosh|Mac OS X|Windows NT|X11|Linux x86_64|CrOS/i;
-
-function distanceKm(
-  a: { lat: number; lon: number },
-  b: { lat: number; lon: number },
-) {
-  const rad = Math.PI / 180;
-  const dLat = (b.lat - a.lat) * rad;
-  const dLon = (b.lon - a.lon) * rad;
-  const h =
-    Math.sin(dLat / 2) ** 2 +
-    Math.cos(a.lat * rad) * Math.cos(b.lat * rad) * Math.sin(dLon / 2) ** 2;
-  return 2 * 6371 * Math.asin(Math.sqrt(h));
-}
 
 export function isDesktopRequest(request: Request): boolean {
   const headers = request.headers;
@@ -45,29 +39,11 @@ export function isDesktopRequest(request: Request): boolean {
   return !MOBILE.test(agent) && DESKTOP.test(agent);
 }
 
-export function isInVideoRegion(request: Request): boolean {
-  const headers = request.headers;
-  const country = headers.get("x-vercel-ip-country") ?? "";
-  const region = headers.get("x-vercel-ip-country-region") ?? "";
-  if (REGIONS[country]?.includes(region)) return true;
-  if (country !== "GB") return false;
-  const lat = Number.parseFloat(headers.get("x-vercel-ip-latitude") ?? "");
-  const lon = Number.parseFloat(headers.get("x-vercel-ip-longitude") ?? "");
-  if (Number.isFinite(lat) && Number.isFinite(lon))
-    return distanceKm({ lat, lon }, LONDON) <= LONDON.km;
-  const city = decodeURIComponent(headers.get("x-vercel-ip-city") ?? "");
-  return /london/i.test(city);
-}
-
-/**
- * Whether this visitor may make new videos. The operator widens the audience
- * from /admin: the early-access places, plus any desktop, or everyone.
- */
-export function canMakeVideosHere(
+export function isInVideoRegion(
   request: Request,
-  audience: VideoAudience = "priority",
+  places: PriorityPlaces = "cities",
 ): boolean {
-  return audienceBlock(request, audience) === null;
+  return isPriorityPlace(requestGeo(request), places);
 }
 
 /**
@@ -78,8 +54,9 @@ export function canMakeVideosHere(
 export function audienceBlock(
   request: Request,
   audience: VideoAudience = "priority",
+  places: PriorityPlaces = "cities",
 ): "mobile" | "place" | null {
-  if (audience === "everyone" || isInVideoRegion(request)) return null;
+  if (audience === "everyone" || isInVideoRegion(request, places)) return null;
   if (audience !== "desktop") return "place";
   return isDesktopRequest(request) ? null : "mobile";
 }
@@ -91,8 +68,37 @@ export function audienceBlock(
 export function anyDeviceHere(
   request: Request,
   audience: VideoAudience = "priority",
+  places: PriorityPlaces = "cities",
 ): boolean {
-  return audience === "everyone" || isInVideoRegion(request);
+  return audience === "everyone" || isInVideoRegion(request, places);
+}
+
+/**
+ * How the limited countries rule (features/admin/limited-countries.ts) treats
+ * this visitor: null when it does not apply, "limited" when they may make one
+ * standard video today, "blocked" when they may not make any. It applies on
+ * top of the audience rule, whatever the audience.
+ *
+ * Under "some", the day's draw is by connection, not by browser, so clearing
+ * cookies or opening a private window does not draw again. It changes at
+ * midnight UTC.
+ */
+export function limitedCountryRule(
+  request: Request,
+  controls: Pick<LiveControls, "limitedCountryAccess" | "limitedCountryShare">,
+  clientIp: string | null,
+  now = Date.now(),
+): "limited" | "blocked" | null {
+  if (controls.limitedCountryAccess === "open") return null;
+  if (!isLimitedCountry(requestGeo(request).country)) return null;
+  if (controls.limitedCountryAccess === "blocked") return "blocked";
+  const share = controls.limitedCountryShare ?? DEFAULT_LIMITED_COUNTRY_SHARE;
+  const day = Math.floor(now / 86_400_000);
+  const draw = createHash("sha256")
+    .update(`video-draw:${day}:${networkOf(clientIp ?? "unknown")}`)
+    .digest()
+    .readUInt32BE(0);
+  return draw % 100 < share ? "limited" : "blocked";
 }
 
 const EARLY_ACCESS_MESSAGE =

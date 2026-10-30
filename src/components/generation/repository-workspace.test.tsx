@@ -64,6 +64,25 @@ const visible = (chart: string) =>
   );
 
 describe("repository generation workspace", () => {
+  it("tells the readout below when the stored diagram is drawn and when a run starts", () => {
+    const { container, rerender } = render(
+      <RepositoryWorkspace {...props} state={cached} />,
+    );
+    const workspace = container.querySelector("[data-repository-workspace]")!;
+    expect(workspace).toHaveAttribute("data-opening", "true");
+    expect(workspace).toHaveAttribute("data-live-run", "false");
+    finish("old");
+    expect(workspace).toHaveAttribute("data-opening", "false");
+    rerender(
+      <RepositoryWorkspace
+        {...props}
+        loading
+        state={{ status: "started", startedAt: 1 }}
+      />,
+    );
+    expect(workspace).toHaveAttribute("data-live-run", "true");
+  });
+
   it("restores a saved diagram without replaying generation activity", () => {
     render(<RepositoryWorkspace {...props} state={cached} />);
     expect(
@@ -81,7 +100,7 @@ describe("repository generation workspace", () => {
     expect(
       screen.queryByRole("heading", { name: "Drawing your diagram" }),
     ).not.toBeInTheDocument();
-    const activity = screen.getByRole("button", { name: "Activity" });
+    const activity = screen.getByRole("button", { name: "Info" });
     expect(activity).toHaveAttribute("aria-expanded", "false");
     fireEvent.click(activity);
     expect(activity).toHaveAttribute("aria-expanded", "true");
@@ -93,7 +112,7 @@ describe("repository generation workspace", () => {
     fireEvent.click(screen.getByRole("button", { name: "Exit zoom" }));
     expect(renders.get("old")?.zoomingEnabled).toBe(false);
   });
-  it("keeps saved generation time and cost in Activity, including after a cancelled replacement", () => {
+  it("keeps saved generation time and cost in Info, including after a cancelled replacement", () => {
     const savedAt = new Date("2026-09-18T08:32:40Z");
     const cost = {
       kind: "actual" as const,
@@ -115,17 +134,17 @@ describe("repository generation workspace", () => {
     ).not.toBeInTheDocument();
     finish("old");
     expect(
-      screen.queryByRole("region", { name: "Generation activity" }),
+      screen.queryByRole("region", { name: "Info" }),
     ).not.toBeInTheDocument();
-    fireEvent.click(screen.getByRole("button", { name: "Activity" }));
-    expect(
-      screen.getByRole("region", { name: "Generation activity" }),
-    ).toHaveTextContent("Actual cost: $0.0076 USD");
+    fireEvent.click(screen.getByRole("button", { name: "Info" }));
+    expect(screen.getByRole("region", { name: "Info" })).toHaveTextContent(
+      "Actual cost: $0.0076 USD",
+    );
     expect(document.querySelector("time")).toHaveAttribute(
       "dateTime",
       savedAt.toISOString(),
     );
-    expect(screen.getByRole("button", { name: "Activity" })).toHaveAttribute(
+    expect(screen.getByRole("button", { name: "Info" })).toHaveAttribute(
       "aria-expanded",
       "true",
     );
@@ -153,7 +172,7 @@ describe("repository generation workspace", () => {
     expect(screen.getByRole("status")).toHaveTextContent("Loading diagram");
     expect(screen.queryByRole("heading", { level: 2 })).not.toBeInTheDocument();
     expect(
-      screen.queryByRole("button", { name: "Activity" }),
+      screen.queryByRole("button", { name: "Info" }),
     ).not.toBeInTheDocument();
   });
   it("presents the repository as a direct link without an edit control", () => {
@@ -358,6 +377,26 @@ describe("repository generation workspace", () => {
     visible("old");
     fireEvent.click(toggle);
     expect(screen.queryByText("explainer panel")).not.toBeInTheDocument();
+  });
+  it("marks which phone column Export sits in, for its menu's direction", () => {
+    const column = () =>
+      screen
+        .getByRole("button", { name: "Export" })
+        .closest("[data-column]")
+        ?.getAttribute("data-column");
+    const { rerender } = render(
+      <RepositoryWorkspace {...props} state={cached} />,
+    );
+    finish("old");
+    expect(column()).toBe("left");
+    rerender(
+      <RepositoryWorkspace
+        {...props}
+        state={cached}
+        video={<p>explainer panel</p>}
+      />,
+    );
+    expect(column()).toBe("right");
   });
   it("retains example regeneration protection", () => {
     render(

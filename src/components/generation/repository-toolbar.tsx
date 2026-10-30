@@ -21,6 +21,7 @@ export function RepositoryToolbar({
   getSvg,
   pending,
   video,
+  readme,
 }: {
   repository: string;
   diagram: string;
@@ -35,6 +36,7 @@ export function RepositoryToolbar({
   getSvg: () => SVGSVGElement | null;
   pending: boolean;
   video?: { id: string; open: boolean; toggle: () => void };
+  readme?: { owner: string; repo: string };
 }) {
   return (
     <div className={styles.resultToolbar}>
@@ -71,7 +73,7 @@ export function RepositoryToolbar({
           aria-controls={historyId}
           onClick={toggleHistory}
         >
-          Activity <ChevronDown size={12} aria-hidden="true" />
+          Info <ChevronDown size={12} aria-hidden="true" />
         </button>
         <button
           type="button"
@@ -83,7 +85,20 @@ export function RepositoryToolbar({
           <Scan size={14} aria-hidden="true" />
           {zooming ? "Exit zoom" : "Enable zoom"}
         </button>
-        <DiagramExport diagram={diagram} getSvg={getSvg} disabled={pending} />
+        {/* On phones the actions sit in two columns; Export lands in the right
+            one after the Video button, so its menu opens toward the left. */}
+        <div
+          className={styles.exportSlot}
+          data-column={video ? "right" : "left"}
+        >
+          <DiagramExport
+            repository={repository}
+            diagram={diagram}
+            getSvg={getSvg}
+            disabled={pending}
+            readme={readme}
+          />
+        </div>
         <button
           ref={regenerateRef}
           type="button"

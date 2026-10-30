@@ -10,11 +10,19 @@ import {
 } from "lucide-react";
 import type { DiagramStreamState } from "~/features/diagram/types";
 import { ArchitectureNotes } from "./architecture-notes";
-import { architectureText } from "./architecture-text";
+import { architectureText } from "~/features/diagram/architecture-text";
+import { DiagramConnections } from "./diagram-connections";
 import { generationStep } from "./progress";
 import styles from "./workspace.module.css";
 
-export function GenerationActivity({ state }: { state: DiagramStreamState }) {
+export function GenerationActivity({
+  state,
+  repository,
+}: {
+  state: DiagramStreamState;
+  /** "owner/repo", to link each connection's evidence on GitHub. */
+  repository?: string;
+}) {
   const step = generationStep(state.status);
   const streaming = [
     "explanation_sent",
@@ -61,6 +69,9 @@ export function GenerationActivity({ state }: { state: DiagramStreamState }) {
           <ArchitectureNotes text={explanation} streaming={streaming} />
         </div>
       )}
+      {repository && state.status === "complete" && state.graph && (
+        <DiagramConnections graph={state.graph} repository={repository} />
+      )}
     </>
   );
 }
@@ -76,7 +87,7 @@ export function ExpandedActivity({ state }: { state: DiagramStreamState }) {
       onToggle={(event) => setExpanded(event.currentTarget.open)}
     >
       <summary>
-        Activity <ChevronDown size={12} aria-hidden="true" />
+        Info <ChevronDown size={12} aria-hidden="true" />
       </summary>
       <div className={styles.detailBody}>
         <GenerationActivity state={state} />

@@ -3,22 +3,14 @@
 import { useState } from "react";
 import Link from "next/link";
 import { Play, Star } from "lucide-react";
-import type { VideoCard } from "~/server/explainer/catalog";
+import type { VideoCard } from "~/features/explainer/catalog-types";
+import { videoFileUrl } from "~/features/explainer/file-url";
+import { formatCompact } from "~/lib/format";
 import styles from "./video-grid.module.css";
-
-const compact = new Intl.NumberFormat("en", {
-  notation: "compact",
-  maximumFractionDigits: 1,
-});
 
 function Poster({ card }: { card: VideoCard }) {
   const [failed, setFailed] = useState(false);
-  const src = `/api/video/file?${new URLSearchParams({
-    username: card.owner,
-    repo: card.repo,
-    format: "still",
-    v: card.createdAt,
-  }).toString()}`;
+  const src = videoFileUrl(card, "still");
   return (
     <div className={styles.poster}>
       {failed ? (
@@ -80,7 +72,7 @@ export function VideoGrid({ cards }: { cards: VideoCard[] }) {
                 {card.stars > 0 && (
                   <span>
                     <Star size={12} aria-hidden="true" />
-                    {compact.format(card.stars).toLowerCase()}
+                    {formatCompact(card.stars).toLowerCase()}
                   </span>
                 )}
                 {card.language && <span>{card.language}</span>}

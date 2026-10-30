@@ -34,6 +34,8 @@ export function RepositoryWorkspace({
   regenerateDisabled = false,
   recovery,
   video,
+  info,
+  readme,
 }: {
   repository: string;
   state: DiagramStreamState;
@@ -46,6 +48,10 @@ export function RepositoryWorkspace({
   recovery?: ReactNode;
   /** Optional explainer video panel; the diagram stays the default view. */
   video?: ReactNode;
+  /** More lines for the Info panel, mounted only while it is open. */
+  info?: ReactNode;
+  /** A stored public diagram, which the Export menu offers for READMEs. */
+  readme?: { owner: string; repo: string };
 }) {
   const {
     presented,
@@ -116,6 +122,11 @@ export function RepositoryWorkspace({
       data-repository-workspace
       data-ready={ready}
       data-has-diagram={Boolean(presented)}
+      // The server-rendered readout under the workspace follows these
+      // (readout.module.css): it waits for the stored diagram to be drawn and
+      // steps aside once a new run starts on the page.
+      data-opening={opening}
+      data-live-run={state.startedAt !== undefined}
     >
       <div
         className={`${styles.fold} ${styles.toolbarFold}`}
@@ -137,6 +148,7 @@ export function RepositoryWorkspace({
             regenerateRef={regenerate}
             getSvg={getSvg}
             pending={!presented}
+            readme={readme}
             video={
               video
                 ? {
@@ -159,7 +171,8 @@ export function RepositoryWorkspace({
           aria-hidden={!videoVisible}
           inert={!videoVisible}
         >
-          {/* Mounted only while open, so closing it stops playback and frees audio. */}
+          {/* Mounted only while open, so closing it stops playback and frees
+              audio. A video being made keeps going (features/explainer/runs.ts). */}
           <div className={styles.foldClip}>{videoVisible && video}</div>
         </div>
       )}
@@ -197,7 +210,7 @@ export function RepositoryWorkspace({
       <div
         id={historyId}
         role="region"
-        aria-label="Generation activity"
+        aria-label="Info"
         className={styles.fold}
         data-open={historyVisible}
         aria-hidden={!historyVisible}
@@ -207,13 +220,17 @@ export function RepositoryWorkspace({
           <div className={styles.resultActivity}>
             {presented && (
               <>
-                <GenerationActivity state={presented.state} />
+                <GenerationActivity
+                  state={presented.state}
+                  repository={repository}
+                />
                 <DiagramMetadata
                   lastGenerated={presented.lastGenerated}
                   cost={presented.state.costSummary}
                 />
               </>
             )}
+            {historyVisible && info}
           </div>
         </div>
       </div>

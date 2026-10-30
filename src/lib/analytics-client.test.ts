@@ -1,8 +1,4 @@
-import type {
-  CapturedNetworkRequest,
-  PostHog,
-  PostHogConfig,
-} from "posthog-js";
+import type { CapturedNetworkRequest, PostHogConfig } from "posthog-js";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 const mocks = vi.hoisted(() => ({
@@ -26,7 +22,9 @@ describe("replay targeting initialization", () => {
     vi.stubEnv("NEXT_PUBLIC_POSTHOG_KEY", "test-project-key");
     vi.stubGlobal("fetch", mocks.fetch);
     mocks.init.mockImplementation((_key: string, config: PostHogConfig) => {
-      config.loaded?.(mocks as unknown as PostHog);
+      config.loaded?.(
+        mocks as unknown as Parameters<NonNullable<PostHogConfig["loaded"]>>[0],
+      );
     });
   });
 
@@ -54,6 +52,8 @@ describe("replay targeting initialization", () => {
     expect(mocks.init.mock.calls[0]![1]).toMatchObject({
       disable_external_dependency_loading: true,
       disable_session_recording: false,
+      // Drops ResizeObserver and bot-rejection noise (exception-noise.ts).
+      before_send: expect.any(Function),
     });
     expect(mocks.setPersonPropertiesForFlags).toHaveBeenCalledWith(
       { replay_region_country: "US", replay_region_code: "WA" },

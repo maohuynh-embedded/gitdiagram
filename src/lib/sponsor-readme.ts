@@ -1,4 +1,9 @@
-import { activeSponsorCampaign, sponsorClickHref } from "./sponsor-campaign";
+// Runs in the README workflow without `bun install`: keep this file and its
+// imports free of packages and path aliases (sponsor-readme.test.ts checks).
+import {
+  activeReadmeSponsorCampaign,
+  sponsorClickHref,
+} from "./sponsor-campaign";
 import { sponsorCreatives } from "./sponsor-creative";
 
 const start = "<!-- sponsor:start -->";
@@ -12,22 +17,23 @@ export function updateSponsorReadme(readme: string, now = Date.now()) {
   ) {
     throw new Error("README must contain exactly one sponsor block.");
   }
-  const campaign = activeSponsorCampaign(now);
-  const creative = campaign && sponsorCreatives[campaign.id];
+  const campaign = activeReadmeSponsorCampaign(now);
   let block =
     "> **Ad space** · [Advertise your product here.](https://gitdiagram.com/advertise)";
-  if (campaign && creative) {
+  if (campaign) {
+    const creative = sponsorCreatives[campaign.id];
     const href = `https://gitdiagram.com${sponsorClickHref("readme", campaign.id)}`;
     const { logo } = creative;
     const dark = logo.darkSrc
       ? `<source media="(prefers-color-scheme: dark)" srcset="./public${logo.darkSrc}" />`
       : "";
-    const width = campaign.id === "coderabbit-2026-10" ? 156 : 104;
-    block = `> <a href="${href}"><picture>${dark}<img src="./public${logo.src}" alt="${creative.name}" width="${width}" align="middle" /></picture></a>&nbsp;&nbsp; <sub>Sponsored</sub>\n>\n> ${creative.message} [${creative.action} →](${href})`;
+    block = `> <a href="${href}"><picture>${dark}<img src="./public${logo.src}" alt="${creative.name}" width="${logo.readmeWidth}" align="middle" /></picture></a>&nbsp;&nbsp; <sub>Sponsored</sub>\n>\n> ${creative.message} [${creative.action} →](${href})`;
   }
+  // Blank lines inside the markers match Prettier, so formatting never undoes
+  // (and re-commits) a scheduled update.
   return (
     readme.slice(0, readme.indexOf(start)) +
-    `${start}\n${block}\n${end}` +
+    `${start}\n\n${block}\n\n${end}` +
     readme.slice(readme.indexOf(end) + end.length)
   );
 }

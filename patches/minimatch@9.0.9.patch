@@ -1,0 +1,25 @@
+diff --git a/dist/commonjs/index.js b/dist/commonjs/index.js
+index c12dc5e6476874f9dbba429a19e445a4a688e1df..d44f857da5dc65f812c8e21206b878523b20bd4f 100644
+--- a/dist/commonjs/index.js
++++ b/dist/commonjs/index.js
+@@ -4,7 +4,8 @@ var __importDefault = (this && this.__importDefault) || function (mod) {
+ };
+ Object.defineProperty(exports, "__esModule", { value: true });
+ exports.unescape = exports.escape = exports.AST = exports.Minimatch = exports.match = exports.makeRe = exports.braceExpand = exports.defaults = exports.filter = exports.GLOBSTAR = exports.sep = exports.minimatch = void 0;
+-const brace_expansion_1 = __importDefault(require("brace-expansion"));
++const braceExpansion = require("brace-expansion");
++const brace_expansion_1 = { default: typeof braceExpansion === "function" ? braceExpansion : (braceExpansion.expand || braceExpansion.default) };
+ const assert_valid_pattern_js_1 = require("./assert-valid-pattern.js");
+ const ast_js_1 = require("./ast.js");
+ const escape_js_1 = require("./escape.js");
+diff --git a/dist/esm/index.js b/dist/esm/index.js
+index 737c8095415235e69e4717b505d0ee4ea3c0b6fa..85a6776cff02cfbbcfcae53d958f5c40f81f02f1 100644
+--- a/dist/esm/index.js
++++ b/dist/esm/index.js
+@@ -1,4 +1,5 @@
+-import expand from 'brace-expansion';
++import * as braceExpansion from 'brace-expansion';
++const expand = typeof braceExpansion.default === 'function' ? braceExpansion.default : braceExpansion.expand;
+ import { assertValidPattern } from './assert-valid-pattern.js';
+ import { AST } from './ast.js';
+ import { escape } from './escape.js';

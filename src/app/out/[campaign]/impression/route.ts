@@ -1,11 +1,15 @@
 import { after, type NextRequest, NextResponse } from "next/server";
 import { z } from "zod";
 import {
-  activeSponsorCampaign,
   findSponsorCampaign,
+  isSponsorCampaignActive,
+  websiteSponsorPlacements,
 } from "~/lib/sponsor-campaign";
+import { getClientIp } from "~/server/http/client-ip";
 import { parseSameOriginJsonRequest } from "~/server/http/same-origin-json";
 import {
+  claimSponsorEvent,
+  isSponsorTestRequest,
   recordSponsorEvent,
   shouldRecordSponsorEvent,
   sponsorVisitor,
@@ -13,8 +17,8 @@ import {
 
 export const dynamic = "force-dynamic";
 const schema = z.strictObject({
-  placement: z.enum(["home", "diagram", "browse"]),
-  eventId: z.uuid(),
+  placement: z.enum(websiteSponsorPlacements),
+  pageViewId: z.uuid(),
 });
 
 export async function POST(
@@ -34,22 +38,35 @@ export async function POST(
     status: 204,
     headers: { "Cache-Control": "no-store" },
   });
-  const isTest = request.nextUrl.searchParams.get("test") === "1";
+  const isTest = await isSponsorTestRequest(request);
   if (
     !shouldRecordSponsorEvent(request) ||
     !process.env.NEXT_PUBLIC_POSTHOG_KEY ||
-    (!isTest && activeSponsorCampaign()?.id !== campaign.id)
+    (!isTest && !isSponsorCampaignActive(campaign.id))
   )
     return response;
   const visitorId = sponsorVisitor(request, response);
-  after(() =>
-    recordSponsorEvent({
-      event: "sponsor_impression",
-      campaign,
-      visitorId,
-      isTest,
-      ...parsed.data,
-    }),
-  );
+  const clientIp = getClientIp(request);
+  const { placement, pageViewId } = parsed.data;
+  after(async () => {
+    // Verification events are excluded from reports, so they skip dedupe.
+    if (
+      isTest ||
+      (await claimSponsorEvent({
+        event: "sponsor_impression",
+        campaignId: campaign.id,
+        placement,
+        clientIp,
+        pageViewId,
+      }))
+    )
+      await recordSponsorEvent({
+        event: "sponsor_impression",
+        campaign,
+        placement,
+        visitorId,
+        isTest,
+      });
+  });
   return response;
 }

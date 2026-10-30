@@ -4,8 +4,8 @@ GitDiagram is one Next.js application. The UI and generation API run together; n
 
 ## Prerequisites
 
-- Node.js `20.9.0` or newer, as required by Next.js 16
-- Bun `1.3.11` or a compatible `1.3.x`
+- Node.js 22: `22.12` or newer for Next.js and the tooling, and `22.22.2` or newer to run the tests (jsdom 30). CI uses Node 22 (`engines.node`); Node `24.15` or newer also works locally.
+- Bun `1.3.14`, the version pinned in `packageManager`, CI and the `Dockerfile`. Do not move to Bun 1.4 yet: it rewrites `bun.lock`.
 
 ```bash
 node --version
@@ -21,7 +21,11 @@ cp .env.example .env
 
 Use `bun ci` when you want an exact frozen-lockfile install, such as in CI.
 
+`bun install` also turns on the versioned git hooks in `.githooks/` (the `prepare` script sets `core.hooksPath`). The pre-push hook runs the fast CI checks (formatting, lint, typecheck and knip) in a few seconds, because a push to `main` deploys to production even when CI fails. Skip it once with `git push --no-verify`.
+
 ## Configure
+
+`.env.example` lists every setting with its default and is the source of truth; this section covers the groups.
 
 Set these storage and coordination variables in `.env`:
 
@@ -48,22 +52,36 @@ Optional generation controls include:
 - `OPENROUTER_MODEL`
 - `OPENROUTER_SITE_URL`
 - `OPENROUTER_APP_NAME`
+- `GENERATION_RATE_LIMIT_MAX` / `GENERATION_RATE_LIMIT_WINDOW_SECONDS` (per-IP limit on server-funded runs, default 8 an hour)
+- `GENERATION_INFRASTRUCTURE_RATE_LIMIT_MAX` / `GENERATION_INFRASTRUCTURE_RATE_LIMIT_WINDOW_SECONDS` (per-IP limit on every caller, default 60 an hour)
+- `MCP_RATE_LIMIT_MAX` / `MCP_RATE_LIMIT_WINDOW_SECONDS` (per-network limit on tool calls to the MCP server at `/mcp`, default 120 an hour; per person, with 20 times that per network, when a chat app such as ChatGPT names the person)
+- `MCP_APP_ORIGIN` (where the MCP App diagram view's script loads from, default `https://gitdiagram.com`; point it at a tunnel to try the view in ChatGPT's developer mode)
+- `OPENAI_APPS_CHALLENGE` (the domain-verification token from OpenAI's plugin portal, served at `/.well-known/openai-apps-challenge`; or `SET` it in Redis at `openai:v1:apps-challenge`, which needs no redeploy)
 
 Optional GitHub authentication:
 
 - `GITHUB_PAT` for one token
 - `GITHUB_PATS` for a comma- or newline-separated token pool
 - `GITHUB_APP_ID` or `GITHUB_CLIENT_ID`, plus `GITHUB_PRIVATE_KEY` and `GITHUB_INSTALLATION_ID`, for GitHub App authentication
+- `GITHUB_CONNECT_CLIENT_ID`, `GITHUB_CONNECT_CLIENT_SECRET`, `GITHUB_CONNECT_APP_SLUG` and `NEXT_PUBLIC_GITHUB_CONNECT=1` for "Continue with GitHub" on private repositories (a separate GitHub App; see `.env.example`)
 
 Optional browser analytics:
 
 - `NEXT_PUBLIC_POSTHOG_KEY`
 
+Optional explainer videos, operator dashboard and live presence:
+
+- `VIDEO_EXPLAINER_ENABLED=1` and `NEXT_PUBLIC_VIDEO_EXPLAINER=1` turn videos on. They need `OPENAI_API_KEY` (GPT-6.1 Sol and whisper-1) and `OPENROUTER_API_KEY` (the voice), plus `ANTHROPIC_API_KEY` while a configured video model is a Claude model (the default).
+- `VIDEO_ADMIN_TOKEN` (32+ characters) signs in to `/admin` and skips the video limits. `ANTHROPIC_ADMIN_KEY` lets `/admin` show the Claude credit left.
+- `NEXT_PUBLIC_PRESENCE_URL` and `PRESENCE_SECRET` connect the site to the presence worker (see [workers/presence/README.md](../workers/presence/README.md)).
+- Local MP4 renders need `VIDEO_RENDER_CHROME_PATH` and must run `next dev` under Node, not Bun.
+- The `VIDEO_*` limits, `SPONSOR_*` settings and `CRON_SECRET` are documented in `.env.example`.
+
 The default OpenAI configuration is:
 
 ```dotenv
 AI_PROVIDER=openai
-OPENAI_MODEL=gpt-5.6-terra
+OPENAI_MODEL=gpt-6-luna
 ```
 
 An OpenRouter example:
@@ -94,23 +112,28 @@ bun run start
 ## Verify
 
 ```bash
-bun run lint
-bun run typecheck
+bun run lint           # fails on any warning
+bun run typecheck      # TypeScript 7; `next build` also checks with TypeScript 6
+bun run format:check   # TS/JS/MDX, CSS, JSON and YAML
+bun run knip           # unused files, exports and dependencies
+bun audit
 bun run test
 bun run build
+bun run check:video-tracing   # after build: video routes trace ffmpeg, never the Chromium launcher where it is not needed, within size ceilings
+bun run perf:budget           # after build: route, chunk and video engine size budgets
 ```
+
+This is the same sequence CI runs. `workers/presence` has its own lockfile and CI job; check it from that folder with `bun ci && bun run typecheck && bun run test && bun audit`.
 
 The test suite includes real Mermaid parser contract tests for the deterministic graph compiler, API route tests, cancellation and quota tests, storage concurrency tests, and browser-rendering safety tests.
 
+## Troubleshooting
+
+- **Typecheck or build fails on files under `.next/dev/types`.** `tsconfig.json` includes the route type validators that `next dev` generates there, and a stale copy from an older checkout can break `bun run typecheck` and `bun run build`. Delete it with `rm -rf .next/dev`; the next `bun run dev` regenerates it.
+- **MP4 renders.** Renders launch the Chromium named by `VIDEO_RENDER_CHROME_PATH` (Debian's, in the render container). `puppeteer-core` is pinned and bumped by hand so it keeps matching that Chromium (see `lib/puppeteer/revisions.js` in puppeteer-core); Dependabot leaves it alone. The Bun dev server cannot load the render externals: run `next dev` under Node to test renders locally.
+
 ## Deploy
 
-The primary deployment is Vercel with Bun as both the package manager and the server runtime for Route Handlers. The route-level `runtime = "nodejs"` declarations select Next.js's server runtime rather than Edge; the project-level `bunVersion` setting makes Vercel execute those Functions with Bun. Add the variables from `.env.example` to the Vercel project, then deploy:
+Production is Cloudflare Workers, built with OpenNext. A push to `main` deploys it (`.github/workflows/cloudflare.yml`). "Hosting on Cloudflare" in [CLAUDE.md](../CLAUDE.md) covers deploying by hand, rolling back, secrets and staging.
 
-```bash
-vercel deploy
-vercel deploy --prod
-```
-
-Local `.env` files and tooling artifacts are excluded by `.vercelignore`.
-
-The same source can be redeployed to Railway later through `Dockerfile` and `railway.json`. Those files are an offline recovery recipe, not a live standby. The container uses Next.js standalone output, listens on Railway's injected `PORT`, runs as a non-root user, and checks `/api/healthz` before promotion. See [deployment-failover.md](deployment-failover.md) for the recovery procedure.
+The same source can be redeployed to Railway later through `Dockerfile` and `railway.json`. Those files are an offline recovery recipe, not a live standby. The container uses Next.js standalone output, listens on Railway's injected `PORT`, runs as a non-root user, and checks `/api/healthz` before promotion. `NEXT_PUBLIC_*` values are compiled in at build time, so they must be passed as build arguments (the `Dockerfile` declares them); MP4 renders there call the server on `http://127.0.0.1:$PORT` unless `VIDEO_INTERNAL_ORIGIN` is set. See [deployment-failover.md](deployment-failover.md) for the recovery procedure, including why the video gate and per-network limits must not be trusted on a host that does not write the request headers the Worker does.

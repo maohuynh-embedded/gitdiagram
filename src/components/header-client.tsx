@@ -1,20 +1,19 @@
 "use client";
 
-import { Suspense, use, useState } from "react";
+import { Suspense, use, useEffect, useState } from "react";
 import dynamic from "next/dynamic";
 import Link from "next/link";
 import { usePathname } from "next/navigation";
 import { Menu, X } from "lucide-react";
 
 import { GitHubIcon } from "~/components/icons/github-icon";
+import { useGitHubConnectResult } from "~/hooks/use-github-connect-result";
+import { formatCompact } from "~/lib/format";
 import { GITHUB_REPO_URL } from "~/lib/site";
+import { VIDEOS_ENABLED } from "~/lib/video-flag";
 
 import { NewBadge } from "./new-badge";
 import { ThemeToggle } from "./theme-toggle";
-
-// Explainer videos are on per deployment; while they are new, the header
-// links their page with a badge.
-const VIDEOS_ENABLED = process.env.NEXT_PUBLIC_VIDEO_EXPLAINER === "1";
 
 const loadApiKeyDialog = () =>
   import("./api-key-dialog").then((module) => module.ApiKeyDialog);
@@ -28,13 +27,8 @@ interface HeaderClientProps {
   starCount: Promise<number | null>;
 }
 
-const compactNumberFormatter = new Intl.NumberFormat("en", {
-  notation: "compact",
-  maximumFractionDigits: 1,
-});
-
 function formatStarCount(count: number) {
-  return compactNumberFormatter.format(count).toLowerCase();
+  return formatCompact(count).toLowerCase();
 }
 
 function MobileStarCount({ starCount }: HeaderClientProps) {
@@ -70,6 +64,12 @@ export function HeaderClient({ starCount }: HeaderClientProps) {
   const [isPrivateReposDialogOpen, setIsPrivateReposDialogOpen] =
     useState(false);
   const [isApiKeyDialogOpen, setIsApiKeyDialogOpen] = useState(false);
+  const [connectResult, dismissConnectResult] = useGitHubConnectResult("menu");
+  // Back from a GitHub sign-in started here: reopen the dialog, which shows
+  // the connected account or why the sign-in did not finish.
+  useEffect(() => {
+    if (connectResult) setIsPrivateReposDialogOpen(true);
+  }, [connectResult]);
   const [isMobileMenuOpen, setIsMobileMenuOpen] = useState(false);
   // pathname is identical on server and client for full-page loads (the proxy
   // never rewrites URLs), so these can render at SSR without mismatch risk.
@@ -131,6 +131,7 @@ export function HeaderClient({ starCount }: HeaderClientProps) {
           </button>
         </div>
         <nav className="hidden items-center gap-6 sm:flex">
+          {/* While explainer videos are new, their page carries a badge. */}
           {VIDEOS_ENABLED && (
             <Link
               href="/videos"
@@ -265,7 +266,17 @@ export function HeaderClient({ starCount }: HeaderClientProps) {
         {isPrivateReposDialogOpen ? (
           <PrivateReposDialog
             isOpen
-            onClose={() => setIsPrivateReposDialogOpen(false)}
+            source="menu"
+            returnTo={pathname}
+            connectError={
+              connectResult?.status === "failed"
+                ? connectResult.reason
+                : undefined
+            }
+            onClose={() => {
+              setIsPrivateReposDialogOpen(false);
+              dismissConnectResult();
+            }}
           />
         ) : null}
         {isApiKeyDialogOpen ? (

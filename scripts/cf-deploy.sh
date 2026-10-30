@@ -1,0 +1,229 @@
+#!/usr/bin/env bash
+# Builds and deploys the site to Cloudflare Workers: the small Worker every
+# request reaches (`gitdiagram-edge`, wrangler.edge.jsonc: cached pages and
+# static files), the site's Worker behind it (`gitdiagram`, wrangler.jsonc:
+# routing, page cache, containers, crons) and the Next.js server behind that,
+# twice: `gitdiagram-server`
+# (wrangler.server.jsonc, in one place next to the data) and
+# `gitdiagram-server-local` (wrangler.server-local.jsonc, where the visitor
+# is, for diagram streams). They always ship together, from one build.
+#
+#   bun run cf:deploy            build, upload prerendered pages to R2, deploy
+#   bun run cf:deploy --secrets  also (re)load every secret from CF_ENV_FILE
+#   bun run cf:deploy --skip-build   deploy the .open-next/ already built
+#   CF_SKIP_CACHE_POPULATE=1         deploy without uploading prerendered pages
+#   CF_FRONT_CONFIG, CF_SERVER_CONFIGS  other wrangler configs (a test set)
+#   CF_EDGE_CONFIG, CF_EDGE_ROUTES   that set's edge Worker and route patterns
+#   CF_NO_CONTAINERS=1               the front config has no containers
+#
+# Needs CLOUDFLARE_API_TOKEN (CI) or the token file / a wrangler login.
+set -euo pipefail
+cd "$(dirname "$0")/.."
+
+export CLOUDFLARE_ACCOUNT_ID="${CLOUDFLARE_ACCOUNT_ID:-8a4f309f2639721dc9f4f0d1790fd6d5}"
+token_file="$HOME/.config/gitdiagram/cloudflare-api-token"
+if [[ -z "${CLOUDFLARE_API_TOKEN:-}" && -f "$token_file" ]]; then
+  CLOUDFLARE_API_TOKEN="$(cat "$token_file")"
+  export CLOUDFLARE_API_TOKEN
+fi
+if [[ -n "${CLOUDFLARE_API_TOKEN:-}" && -z "${CI:-}" ]]; then
+  # wrangler 4.146 checks a stored `wrangler login`'s scopes even when a
+  # token is set, and then refuses to deploy containers. Give it an empty
+  # config home so only the token counts.
+  XDG_CONFIG_HOME="$(mktemp -d)"
+  export XDG_CONFIG_HOME
+fi
+
+front_config="${CF_FRONT_CONFIG:-wrangler.jsonc}"
+# The small Worker in front, which holds the site's routes. Only the live
+# site has one by default: another front (staging, a test set) gets one when
+# CF_EDGE_CONFIG names its config (and CF_EDGE_ROUTES its route patterns).
+if [[ -n "${CF_FRONT_CONFIG:-}" ]]; then
+  edge_config="${CF_EDGE_CONFIG:-}"
+else
+  edge_config="${CF_EDGE_CONFIG-wrangler.edge.jsonc}"
+fi
+# Space-separated when given.
+read -r -a server_configs <<<"${CF_SERVER_CONFIGS:-wrangler.server.jsonc wrangler.server-local.jsonc}"
+
+# A deploy that changes what the render containers run builds their image
+# (the repo's Dockerfile); see scripts/cf-container-image.mjs.
+if [[ -z "${CF_NO_CONTAINERS:-}" ]] && ! docker info >/dev/null 2>&1; then
+  echo "Docker is not reachable (start it, or run: sg docker -c 'bun run cf:deploy')." >&2
+  exit 1
+fi
+
+# The containers' image is named after what goes into it, and built only when
+# that changed. The front is deployed from a copy of its config that points
+# at the image in the registry, so a push that leaves the containers' code
+# alone starts no rollout: running renders and videos are not disturbed, and
+# the next one does not wait for a new image. Its build (a second Next build
+# plus Chromium) runs beside the site's build and the servers' upload below,
+# and is waited for before anything goes live.
+front_deploy_config="$front_config"
+image_pid=""
+if [[ -z "${CF_NO_CONTAINERS:-}" ]]; then
+  front_deploy_config="wrangler.deploy.jsonc"
+  image_log="$(mktemp)"
+  node scripts/cf-container-image.mjs --from "$front_config" \
+    --config "$front_deploy_config" >/dev/null 2>"$image_log" &
+  image_pid=$!
+  trap 'kill "$image_pid" 2>/dev/null || true' EXIT
+fi
+wait_for_image() {
+  [[ -n "$image_pid" ]] || return 0
+  local status=0
+  wait "$image_pid" || status=$?
+  image_pid=""
+  cat "$image_log" >&2
+  if ((status != 0)); then
+    echo "The containers' image failed; nothing was deployed." >&2
+    exit "$status"
+  fi
+}
+
+if [[ " $* " != *" --skip-build "* ]]; then
+  bash scripts/cf-build.sh
+fi
+
+# Tabs opened before this deploy still ask for the last builds' script and
+# style files (Workers Assets only serves what this deploy uploads; Vercel's
+# Skew Protection kept old deployments reachable). Keep each build's hashed
+# files for a week and upload them alongside the new ones. Names are content
+# hashes, so builds never collide.
+history="${CF_STATIC_HISTORY:-.open-next-history}"
+build_id="$(cat .open-next/assets/BUILD_ID)"
+mkdir -p "$history/$build_id"
+cp -R .open-next/assets/_next/static/. "$history/$build_id/"
+touch "$history/$build_id"
+find "$history" -mindepth 1 -maxdepth 1 -type d -mtime +7 -exec rm -rf {} +
+# Newest first, at most ten builds.
+ls -1t "$history" | tail -n +11 | while IFS= read -r old; do
+  rm -rf "${history:?}/$old"
+done
+for build in "$history"/*/; do
+  cp -Rn "$build." .open-next/assets/_next/static/
+done
+
+commit="$(git rev-parse --short=7 HEAD 2>/dev/null || echo unknown)"
+# wrangler would otherwise hand a Next.js project to OpenNext's own deploy.
+export OPEN_NEXT_DEPLOY=true
+worker_name() { sed -nE 's/^ *"name": *"([^"]+)".*/\1/p' "$1" | head -1; }
+
+# 1. The servers (the Next.js server, and its copy that runs diagram streams
+#    where the visitor is). A new version of each is uploaded without
+#    traffic, next to the one serving; the new front pins its requests to
+#    them (the Cloudflare-Workers-Version-Overrides header,
+#    cloudflare/worker.ts), so during the rollout a page is always routed and
+#    rendered by one build.
+#    Once both are live they upload at the same time (on a first deploy the
+#    local copy needs the placed server up first, as it binds it). Each run
+#    prints "staged|first <version>" as its last line.
+current_version() {
+  bunx wrangler deployments status -c "$1" --json 2>/dev/null |
+    node -e 'let s="";process.stdin.on("data",d=>s+=d).on("end",()=>{const v=JSON.parse(s).versions.sort((a,b)=>b.percentage-a.percentage)[0];process.stdout.write(v.version_id)})' 2>/dev/null
+}
+stage_server() {
+  local server_config="$1" current="$2" upload server_version first
+  if [[ -n "$current" ]]; then
+    upload="$(bunx wrangler versions upload -c "$server_config" \
+      --var "GIT_COMMIT_SHA:$commit" --message "$commit" 2>&1)" || { echo "$upload"; return 1; }
+    echo "$upload"
+    server_version="$(grep -oE 'Worker Version ID: [0-9a-f-]+' <<<"$upload" | awk '{print $4}')"
+    [[ -n "$server_version" ]] || { echo "No server version id in wrangler's output."; return 1; }
+    bunx wrangler versions deploy "$current@100%" "$server_version@0%" -y \
+      -c "$server_config" --message "staged $commit" || return 1
+    echo "staged $server_version"
+  else
+    # The first deploy: nothing is serving yet.
+    first="$(bunx wrangler deploy -c "$server_config" \
+      --var "GIT_COMMIT_SHA:$commit" 2>&1)" || { echo "$first"; return 1; }
+    echo "$first"
+    server_version="$(grep -oE 'Current Version ID: [0-9a-f-]+' <<<"$first" | awk '{print $4}')"
+    [[ -n "$server_version" ]] || { echo "No server version id in wrangler's output."; return 1; }
+    echo "first $server_version"
+  fi
+}
+server_logs="$(mktemp -d)"
+probes=()
+for i in "${!server_configs[@]}"; do
+  current_version "${server_configs[$i]}" >"$server_logs/$i.current" &
+  probes+=($!)
+done
+wait "${probes[@]}" || true
+all_live=1
+for i in "${!server_configs[@]}"; do
+  [[ -s "$server_logs/$i.current" ]] || all_live=0
+done
+server_pids=()
+failed=0
+for i in "${!server_configs[@]}"; do
+  stage_server "${server_configs[$i]}" "$(cat "$server_logs/$i.current")" \
+    >"$server_logs/$i" 2>&1 &
+  server_pids+=($!)
+  if ((!all_live)); then
+    wait "$!" || failed=1
+    cat "$server_logs/$i" >&2
+    ((failed == 0)) || break
+  fi
+done
+if ((all_live)); then
+  for i in "${!server_configs[@]}"; do
+    wait "${server_pids[$i]}" || failed=1
+    cat "$server_logs/$i" >&2
+  done
+fi
+((failed == 0)) || { echo "A server upload failed; nothing went live." >&2; exit 1; }
+overrides=""
+staged=()
+for i in "${!server_configs[@]}"; do
+  server_config="${server_configs[$i]}"
+  read -r kind server_version < <(tail -n 1 "$server_logs/$i")
+  [[ -n "$server_version" ]] || { echo "No version for $server_config." >&2; exit 1; }
+  [[ "$kind" == staged ]] && staged+=("$server_config=$server_version")
+  overrides+="${overrides:+, }$(worker_name "$server_config")=\"$server_version\""
+done
+
+# The containers' image, which every step below needs live.
+wait_for_image
+
+# 2. The edge Worker, with this build's static files (and the last builds').
+#    It goes first: until the front below is live it passes pages of the old
+#    build through, whose files it still has; the other way round, the new
+#    front's pages would ask an old edge for files it never had. Then the
+#    site's routes are pointed at it (a no-op once they are).
+if [[ -n "$edge_config" ]]; then
+  bunx wrangler deploy -c "$edge_config" \
+    --var "GIT_COMMIT_SHA:$commit" \
+    --var "SERVER_VERSION_OVERRIDE:$overrides"
+  # shellcheck disable=SC2086
+  node scripts/cf-routes.mjs "$(worker_name "$edge_config")" ${CF_EDGE_ROUTES:-}
+fi
+
+# 3. The front: prerendered pages into R2 (unless the build had no data
+#    behind them), then the Worker itself, which goes live at once.
+if [[ -z "${CF_SKIP_CACHE_POPULATE:-}" ]]; then
+  bunx opennextjs-cloudflare populateCache remote -c "$front_config"
+fi
+bunx wrangler deploy -c "$front_deploy_config" \
+  --var "GIT_COMMIT_SHA:$commit" \
+  --var "SERVER_VERSION_OVERRIDE:$overrides"
+
+# 4. The new servers take all traffic (the old front's last requests too).
+for entry in "${staged[@]}"; do
+  bunx wrangler versions deploy "${entry#*=}@100%" -y \
+    -c "${entry%%=*}" --message "$commit"
+done
+
+if [[ " $* " == *" --secrets "* ]]; then
+  for config in "${server_configs[@]}" "$front_config"; do
+    node scripts/cf-secrets.mjs | bunx wrangler secret bulk -c "$config"
+  done
+  # The edge Worker needs three: what it shows the server when it rechecks a
+  # page (src/lib/colo-cache.ts), and Redis, where it counts crawler fetches.
+  if [[ -n "$edge_config" ]]; then
+    node scripts/cf-secrets.mjs |
+      node -e 'let s="";process.stdin.on("data",d=>s+=d).on("end",()=>{const {CRON_SECRET,UPSTASH_REDIS_REST_URL,UPSTASH_REDIS_REST_TOKEN}=JSON.parse(s);process.stdout.write(JSON.stringify({CRON_SECRET,UPSTASH_REDIS_REST_URL,UPSTASH_REDIS_REST_TOKEN}))})' |
+      bunx wrangler secret bulk -c "$edge_config"
+  fi
+fi

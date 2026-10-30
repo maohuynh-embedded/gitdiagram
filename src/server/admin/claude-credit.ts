@@ -1,6 +1,12 @@
 import "server-only";
 
 import type { ClaudeCredit } from "~/features/admin/types";
+import {
+  claudeCostUsd,
+  claudePrice,
+  HIGHEST_CLAUDE_PRICE,
+} from "~/server/anthropic-pricing";
+import { outliveRequest } from "~/server/shared-read";
 import { upstashCommand } from "~/server/storage/upstash";
 
 // Anthropic has no API for the prepaid credit balance, only for what was spent.
@@ -23,21 +29,6 @@ const MINUTE = 60_000;
 const HOUR = 60 * MINUTE;
 const DAY = 24 * HOUR;
 
-// USD per million tokens at API list prices. Cache writes cost 1.25× input for
-// 5 minutes and 2× for an hour. Unknown models are priced as the most
-// expensive one, so the balance errs low.
-const PRICES: Record<
-  string,
-  { input: number; output: number; cacheRead: number }
-> = {
-  "claude-fable-5-1": { input: 10, output: 50, cacheRead: 0.25 },
-  "claude-fable-5": { input: 10, output: 50, cacheRead: 1 },
-  "claude-opus-5-5": { input: 4, output: 20, cacheRead: 0.2 },
-  "claude-opus-5": { input: 5, output: 25, cacheRead: 0.5 },
-  "claude-sonnet-5": { input: 2, output: 10, cacheRead: 0.2 },
-  "claude-haiku-4-5": { input: 1, output: 5, cacheRead: 0.1 },
-};
-const FALLBACK_PRICE = PRICES["claude-fable-5-1"]!;
 const WEB_SEARCH_USD = 0.01;
 
 export type CostWindow =
@@ -90,17 +81,23 @@ interface UsageResult {
 
 /** List-price cost in USD of one usage report row. */
 export function priceUsage(row: UsageResult): number {
-  const price = (row.model && PRICES[row.model]) || FALLBACK_PRICE;
+  // Unknown models are priced as the most expensive one, so the balance errs low.
+  // A row sums many requests, so a per-request long-prompt rate cannot be
+  // told here; the site's prompts stay under it.
+  const price = {
+    ...((row.model && claudePrice(row.model)) || HIGHEST_CLAUDE_PRICE),
+    longPrompt: undefined,
+  };
   const writes = row.cache_creation ?? {};
-  const tokens =
-    row.uncached_input_tokens * price.input +
-    (writes.ephemeral_5m_input_tokens ?? 0) * price.input * 1.25 +
-    (writes.ephemeral_1h_input_tokens ?? 0) * price.input * 2 +
-    row.cache_read_input_tokens * price.cacheRead +
-    row.output_tokens * price.output;
+  const tokenCost = claudeCostUsd(price, {
+    input: row.uncached_input_tokens,
+    cacheWrite5m: writes.ephemeral_5m_input_tokens,
+    cacheWrite1h: writes.ephemeral_1h_input_tokens,
+    cacheRead: row.cache_read_input_tokens,
+    output: row.output_tokens,
+  });
   return (
-    tokens / 1_000_000 +
-    (row.server_tool_use?.web_search_requests ?? 0) * WEB_SEARCH_USD
+    tokenCost + (row.server_tool_use?.web_search_requests ?? 0) * WEB_SEARCH_USD
   );
 }
 
@@ -167,11 +164,20 @@ async function readAnchor(): Promise<{ usd: number; at: number } | null> {
     : null;
 }
 
-let cache: { at: number; credit: Promise<ClaudeCredit | null> } | null = null;
+// The credit last worked out, from which entered balance (its `setAt`, so an
+// instance notices a balance entered through another one), and when.
+// Failures are kept for the minute too: an invalid key or a 429 must not turn
+// into a report request on every poll.
+let cache: {
+  at: number;
+  setAt: number | null;
+  credit: Promise<ClaudeCredit>;
+} | null = null;
 
-async function computeCredit(now: number): Promise<ClaudeCredit | null> {
-  if (!process.env.ANTHROPIC_ADMIN_KEY?.trim()) return null;
-  const anchor = await readAnchor();
+async function computeCredit(
+  anchor: { usd: number; at: number } | null,
+  now: number,
+): Promise<ClaudeCredit> {
   if (!anchor) return { setUsd: null, setAt: null, spentUsd: 0 };
   const costs = await Promise.all(
     costWindows(Math.min(anchor.at, now), now).map(windowCost),
@@ -184,21 +190,29 @@ async function computeCredit(now: number): Promise<ClaudeCredit | null> {
  * The Claude API credit left, as the last entered Console balance minus the
  * spend since. Null when there is no admin key; throws when a report fails.
  */
-export function readClaudeCredit(): Promise<ClaudeCredit | null> {
+export async function readClaudeCredit(): Promise<ClaudeCredit | null> {
+  if (!process.env.ANTHROPIC_ADMIN_KEY?.trim()) return null;
   const now = Date.now();
-  if (!cache || now - cache.at > CACHE_MS) {
-    const credit = computeCredit(now);
-    cache = { at: now, credit };
-    // A failed read is not cached, so the next poll tries again.
-    credit.catch(() => {
-      if (cache?.credit === credit) cache = null;
-    });
+  // One small Redis read per poll, so a balance entered through any instance
+  // shows on every instance at once, not when each one's minute runs out.
+  const anchor = await readAnchor();
+  const setAt = anchor?.at ?? null;
+  if (!cache || now - cache.at > CACHE_MS || cache.setAt !== setAt) {
+    const credit = outliveRequest(computeCredit(anchor, now));
+    credit.catch(() => undefined); // Each caller still sees the failure.
+    cache = { at: now, setAt, credit };
   }
   return cache.credit;
 }
 
-/** Record the balance the Console shows right now, e.g. after a top-up. */
-export async function setClaudeCredit(usd: number): Promise<void> {
-  await upstashCommand(["HSET", KEY, "usd", String(usd), "at", Date.now()]);
-  cache = null;
+/**
+ * Record the balance the Console shows right now, e.g. after a top-up.
+ * Returns the credit as it now stands: nothing spent since.
+ */
+export async function setClaudeCredit(usd: number): Promise<ClaudeCredit> {
+  const at = Date.now();
+  await upstashCommand(["HSET", KEY, "usd", String(usd), "at", at]);
+  const credit: ClaudeCredit = { setUsd: usd, setAt: at, spentUsd: 0 };
+  cache = { at, setAt: at, credit: Promise.resolve(credit) };
+  return credit;
 }

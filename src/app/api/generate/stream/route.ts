@@ -40,6 +40,7 @@ import {
 import {
   EXPLANATION_REASONING_EFFORT,
   EXPLANATION_ESTIMATED_OUTPUT_TOKENS,
+  MAX_GENERATION_INPUT_TOKENS,
   ARCHITECTURE_SLOW_RETRY_MS,
   getArchitectureReasoningEffort,
   EXPLANATION_TEXT_VERBOSITY,
@@ -107,7 +108,6 @@ export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 export const maxDuration = 300;
 
-const HARD_GENERATION_INPUT_TOKEN_LIMIT = 195_000;
 // Reserve enough of Vercel's 300s budget for quota reconciliation and a
 // contention-safe R2 write even when an upstream generation runs unusually long.
 const GENERATION_DEADLINE_MS = 220_000;
@@ -133,16 +133,18 @@ export async function POST(request: Request) {
     repo,
     apiKey,
     githubPat,
+    githubStorageKey,
     sessionId,
     cancelToken,
     cancellationRegistered,
     rateLimitedClientIp,
     rateLimitedWindowStartSeconds,
   } = admission.value;
-  // A private repository's name stays off the operator's live feed.
-  const liveLabel = githubPat?.trim()
-    ? "a private repository"
-    : `${username}/${repo}`;
+  // A private repository's name stays off the operator's live feed: a run is
+  // announced once GitHub has confirmed the repository public, and a run
+  // with the visitor's own GitHub token is labelled private throughout.
+  let liveLabel = githubPat?.trim() ? "a private repository" : "a repository";
+  let liveStarted = false;
   const generationAbortController = new AbortController();
   const deadlineSignal = AbortSignal.timeout(GENERATION_DEADLINE_MS);
   const postResponseTasks: Array<() => Promise<void>> = [];
@@ -306,14 +308,17 @@ export async function POST(request: Request) {
               used_private_github_token: Boolean(githubPat),
             }),
           );
-          void emitLiveEvent({
-            kind: "diagram.started",
-            repo: liveLabel,
-            model,
-            ownKey: Boolean(apiKey),
-            job: { id: audit.sessionId, state: "start", label: liveLabel },
-            ...requestOrigin(request),
-          });
+          const announceStarted = () => {
+            liveStarted = true;
+            void emitLiveEvent({
+              kind: "diagram.started",
+              repo: liveLabel,
+              model,
+              ownKey: Boolean(apiKey),
+              job: { id: audit.sessionId, state: "start", label: liveLabel },
+              ...requestOrigin(request),
+            });
+          };
 
           if (isComplimentaryGateEnabled() && !apiKey) {
             if (provider !== "openai") {
@@ -381,6 +386,9 @@ export async function POST(request: Request) {
           repositoryVerified = true;
           recordTiming("github", githubStartedAt);
           storageVisibility = githubData.isPrivate ? "private" : "public";
+          if (!githubPat?.trim() && !githubData.isPrivate)
+            liveLabel = `${username}/${repo}`;
+          announceStarted();
           const context = prepareRepositoryContext(githubData);
           const analysisModel = selectAnalysisModel({
             provider,
@@ -398,6 +406,8 @@ export async function POST(request: Request) {
             repo,
             githubData,
             selectedPaths: context.selectedPaths,
+            referencePaths: context.referencePaths,
+            listedPaths: context.listedPaths,
             githubPat,
             signal: generationAbortController.signal,
           });
@@ -459,7 +469,7 @@ export async function POST(request: Request) {
           });
 
           throwIfAborted(generationAbortController.signal);
-          if (tokenCount >= HARD_GENERATION_INPUT_TOKEN_LIMIT) {
+          if (tokenCount >= MAX_GENERATION_INPUT_TOKENS) {
             const error = REPOSITORY_TOO_LARGE_ERROR;
             audit = withFailure(audit, {
               failureStage: "started",
@@ -558,7 +568,7 @@ export async function POST(request: Request) {
           send({
             status: "explanation",
             session_id: audit.sessionId,
-            source_file_count: sources.paths.length,
+            source_file_count: (sources.readPaths ?? sources.paths).length,
             message: "Analyzing repository structure...",
           });
 
@@ -753,6 +763,10 @@ export async function POST(request: Request) {
               : undefined,
             fileTree: context.fileTree,
             fileTreeLookup,
+            evidence: {
+              readPaths: sources.readPaths ?? sources.paths,
+              references: sources.references ?? {},
+            },
             signal: generationAbortController.signal,
             audit,
             complimentaryEstimate,
@@ -914,6 +928,12 @@ export async function POST(request: Request) {
                 cost_summary:
                   terminalAudit.finalCost ?? terminalAudit.estimatedCost,
                 latest_session_audit: toTerminalSessionAudit(terminalAudit),
+                // For the visitor's own analytics: a repository name is only
+                // reported once GitHub has confirmed it public.
+                used_own_key: Boolean(apiKey),
+                ...(repositoryVerified
+                  ? { repository_visibility: storageVisibility }
+                  : {}),
                 ...(persistenceWarning
                   ? { persistence_warning: persistenceWarning }
                   : {}),
@@ -924,31 +944,61 @@ export async function POST(request: Request) {
             );
           };
 
-          audit = await finalizeGenerationStream({
-            abortCause,
-            accounting,
-            apiKey,
-            audit,
-            githubPat,
-            postResponseTasks,
-            quotaReservation,
-            rateLimitedClientIp,
-            rateLimitedWindowStartSeconds,
-            recordTiming,
-            repo,
-            repositoryVerified,
-            sendTerminal,
-            storageVisibility,
-            streamState,
-            successfulDiagramState,
-            username,
-          });
-
-          clearInterval(heartbeat);
-          stopCancellationPolling();
-          request.signal.removeEventListener("abort", handleRequestAbort);
-          deadlineSignal.removeEventListener("abort", handleDeadline);
-          await closeStream();
+          try {
+            audit = await finalizeGenerationStream({
+              abortCause,
+              accounting,
+              apiKey,
+              audit,
+              githubStorageKey,
+              postResponseTasks,
+              quotaReservation,
+              rateLimitedClientIp,
+              rateLimitedWindowStartSeconds,
+              recordTiming,
+              repo,
+              repositoryVerified,
+              sendTerminal,
+              storageVisibility,
+              streamState,
+              successfulDiagramState,
+              username,
+            });
+          } finally {
+            clearInterval(heartbeat);
+            stopCancellationPolling();
+            request.signal.removeEventListener("abort", handleRequestAbort);
+            deadlineSignal.removeEventListener("abort", handleDeadline);
+            // Queued even when finalizing throws, so /admin never shows the
+            // job running forever. Sent after the response closes, while the
+            // function stays up for its post-response work.
+            const finishedAudit = audit;
+            postResponseTasks.push(() => {
+              const finishedCost =
+                finishedAudit.finalCost ?? finishedAudit.estimatedCost;
+              return emitLiveEvent({
+                kind: "diagram.finished",
+                repo: liveLabel,
+                outcome: streamState.wasCancelled
+                  ? "cancelled"
+                  : finishedAudit.status === "succeeded"
+                    ? "complete"
+                    : "error",
+                errorCode: terminalErrorCode,
+                ms: Math.round(performance.now() - invocationStartedAt),
+                costUsd: finishedCost?.amountUsd ?? null,
+                ...(liveStarted
+                  ? {
+                      job: {
+                        id: finishedAudit.sessionId,
+                        state: "end" as const,
+                      },
+                    }
+                  : {}),
+              });
+            });
+            await closeStream();
+          }
 
           logGenerationFinished({
             accounting,
@@ -960,24 +1010,6 @@ export async function POST(request: Request) {
             streamState,
             terminalErrorCode,
           });
-          // Sent after the response closes, while the function stays up for
-          // its post-response work.
-          const finishedCost = audit.finalCost ?? audit.estimatedCost;
-          postResponseTasks.push(() =>
-            emitLiveEvent({
-              kind: "diagram.finished",
-              repo: liveLabel,
-              outcome: streamState.wasCancelled
-                ? "cancelled"
-                : audit.status === "succeeded"
-                  ? "complete"
-                  : "error",
-              errorCode: terminalErrorCode,
-              ms: Math.round(performance.now() - invocationStartedAt),
-              costUsd: finishedCost?.amountUsd ?? null,
-              job: { id: audit.sessionId, state: "end" },
-            }),
-          );
         }
       };
 

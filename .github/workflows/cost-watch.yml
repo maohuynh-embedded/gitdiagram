@@ -1,0 +1,33 @@
+name: Cost watch
+
+# A Cloudflare spend projection, run by hand only: it projects a month from the
+# last N hours of usage (scripts/cf-usage.mjs) and fails above the ceiling.
+# The hourly schedule was removed on 2026-10-22 on Ahmed's rule: no usage or
+# budget alerts on Cloudflare ("go all out on cloudflare cuz its good"); it had
+# failed and emailed him every hour at a projected ~$222 a month.
+# Run it with: gh workflow run "Cost watch" -f ceiling=300
+on:
+  workflow_dispatch:
+    inputs:
+      ceiling:
+        description: "Fail above this many dollars a month"
+        default: "200"
+
+permissions:
+  contents: read
+
+jobs:
+  watch:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Setup Node
+        uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version-file: package.json
+      - name: Project the month from the last six hours
+        run: node scripts/cf-usage.mjs --hours 6 --fail-above "$CEILING"
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CEILING: ${{ inputs.ceiling || '200' }}

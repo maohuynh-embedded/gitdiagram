@@ -54,29 +54,36 @@ const videoStagePolicy = [
   "frame-ancestors 'self'",
 ].join("; ");
 
-// Explainer videos are rendered to MP4 in headless Chromium with ffmpeg. Both
-// ship native binaries that must stay out of the bundle and be traced into the
-// functions that launch them.
-const videoRenderFiles = [
-  "./node_modules/@sparticuz/chromium/bin/**",
-  "./node_modules/ffmpeg-static/ffmpeg",
-];
+// Explainer videos are rendered to MP4 in headless Chromium with ffmpeg.
+// Chromium is the render container's own (VIDEO_RENDER_CHROME_PATH); ffmpeg
+// ships a native binary that must stay out of the bundle and be traced into
+// the routes that run it. The render route only mixes and joins with ffmpeg
+// (segments and posters render through /api/video/render/segment), and it and
+// the generate route never import the Chromium half (render.ts):
+// scripts/check-video-render-tracing.mjs keeps it that way.
+const ffmpegFiles = ["./node_modules/ffmpeg-static/ffmpeg"];
+
+// IndexNow proves ownership with a key file at the site root: /<key>.txt is
+// served by /api/indexnow-key (src/server/visibility/indexnow.ts).
+const indexNowKey = process.env.INDEXNOW_KEY?.trim() ?? "";
+const indexNowRewrites = /^[A-Za-z0-9-]{8,128}$/.test(indexNowKey)
+  ? [{ source: `/${indexNowKey}.txt`, destination: "/api/indexnow-key" }]
+  : [];
 
 /** @type {import("next").NextConfig} */
 const config = {
   reactStrictMode: false,
-  serverExternalPackages: [
-    "@sparticuz/chromium",
-    "puppeteer-core",
-    "ffmpeg-static",
-  ],
+  serverExternalPackages: ["puppeteer-core", "ffmpeg-static"],
   outputFileTracingIncludes: {
-    "/api/video/render": videoRenderFiles,
-    "/api/video/render/segment": videoRenderFiles,
-    "/api/video/generate": videoRenderFiles,
+    "/api/video/render": ffmpegFiles,
+    "/api/video/render/segment": ffmpegFiles,
+    "/api/video/generate": ffmpegFiles,
   },
   allowedDevOrigins: ["127.0.0.1"],
   ...(process.env.RAILWAY_DOCKER_BUILD === "1" ? { output: "standalone" } : {}),
+  // A deploy checks types once, with the repo's own TypeScript after the build
+  // (scripts/cf-build.sh), instead of in each of its two Next builds.
+  typescript: { ignoreBuildErrors: process.env.NEXT_SKIP_TYPECHECK === "1" },
   transpilePackages: ["@aws-sdk/client-s3"],
   async redirects() {
     return [
@@ -107,6 +114,12 @@ const config = {
   },
   async rewrites() {
     return [
+      ...indexNowRewrites,
+      // OpenAI's plugin portal proves the MCP server's domain with a token.
+      {
+        source: "/.well-known/openai-apps-challenge",
+        destination: "/api/openai-apps-challenge",
+      },
       {
         source: "/phx9a/static/:path*",
         destination: "https://us-assets.i.posthog.com/static/:path*",
@@ -121,6 +134,16 @@ const config = {
     return [
       {
         source: "/favicon.ico",
+        headers: [
+          {
+            key: "Cache-Control",
+            value: "public, max-age=86400, stale-while-revalidate=604800",
+          },
+        ],
+      },
+      // The README badge for diagrams; GitHub's image proxy may keep it a day.
+      {
+        source: "/diagram-badge.svg",
         headers: [
           {
             key: "Cache-Control",
@@ -162,6 +185,25 @@ const config = {
           { key: "Content-Security-Policy", value: videoStagePolicy },
           // Engine code changes with the app, so it always revalidates.
           { key: "Cache-Control", value: "no-cache" },
+        ],
+      },
+      // The diagram view chat apps show (scripts/build-mcp-app.mjs) loads
+      // from their sandboxed frames, on other origins; module scripts need
+      // CORS. The entry keeps its name, so it revalidates; chunks are hashed.
+      {
+        source: "/mcp-app/:path*",
+        headers: [
+          { key: "Access-Control-Allow-Origin", value: "*" },
+          { key: "Cache-Control", value: "no-cache" },
+        ],
+      },
+      {
+        source: "/mcp-app/chunks/:path*",
+        headers: [
+          {
+            key: "Cache-Control",
+            value: "public, max-age=31536000, immutable",
+          },
         ],
       },
       {

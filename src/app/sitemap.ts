@@ -1,11 +1,15 @@
 import type { MetadataRoute } from "next";
 import { unstable_cache } from "next/cache";
-import { getCachedBrowseIndex } from "~/server/browse-index-cache";
+import {
+  getCachedBrowseIndex,
+  getCachedBrowseIndexTotal,
+} from "~/server/browse-index-cache";
 import type { BrowseIndexEntry } from "~/features/browse/catalog";
+import { GUIDE_UPDATED } from "~/features/guide/content";
 import { SITE_URL } from "~/lib/site";
 import { getSitemapCount, SITEMAP_PAGE_SIZE } from "~/lib/sitemaps";
 import { isVideoExplainerEnabled } from "~/server/explainer/config";
-import { listStoredVideos } from "~/server/explainer/store";
+import { listVideoCards } from "~/server/explainer/catalog";
 
 // Watch pages render their video client-side, so the sitemap is how search
 // engines find them. The list is small and changes slowly.
@@ -13,10 +17,10 @@ const MAX_VIDEO_ROUTES = 5_000;
 const getVideoRoutes = unstable_cache(
   async (): Promise<MetadataRoute.Sitemap> => {
     if (!isVideoExplainerEnabled()) return [];
-    const videos = await listStoredVideos();
+    const videos = await listVideoCards();
     return videos.slice(0, MAX_VIDEO_ROUTES).map((video) => ({
-      url: `${SITE_URL}/${video.owner}/${video.repo}/video`,
-      lastModified: video.updatedAt ?? new Date(),
+      url: `${SITE_URL}/${video.owner.toLowerCase()}/${video.repo.toLowerCase()}/video`,
+      lastModified: video.createdAt,
       changeFrequency: "monthly" as const,
       priority: 0.6,
     }));
@@ -55,6 +59,28 @@ function getStaticRoutes(latestBrowseUpdate: Date): MetadataRoute.Sitemap {
       changeFrequency: "daily",
       priority: 0.8,
     },
+    ...(isVideoExplainerEnabled()
+      ? [
+          {
+            url: `${SITE_URL}/videos`,
+            lastModified: new Date(),
+            changeFrequency: "daily" as const,
+            priority: 0.8,
+          },
+          {
+            url: `${SITE_URL}/reels`,
+            lastModified: new Date(),
+            changeFrequency: "daily" as const,
+            priority: 0.6,
+          },
+        ]
+      : []),
+    {
+      url: `${SITE_URL}/visualize-codebase`,
+      lastModified: new Date(GUIDE_UPDATED),
+      changeFrequency: "monthly",
+      priority: 0.8,
+    },
     {
       url: `${SITE_URL}/advertise`,
       lastModified: new Date("2026-09-19"),
@@ -64,11 +90,14 @@ function getStaticRoutes(latestBrowseUpdate: Date): MetadataRoute.Sitemap {
   ];
 }
 
+// Only a count is needed here, and robots.txt calls this on the placed
+// server, which must never hold the whole index (CLAUDE.md, the 128 MB rule).
 export async function generateSitemaps() {
-  const browseEntries = await getCachedBrowseIndex().catch(() => null);
+  const browseTotal = await getCachedBrowseIndexTotal().catch(() => null);
   const videoRoutes = await getVideoRoutes().catch(() => []);
   const sitemapCount = getSitemapCount(
-    (browseEntries?.length ?? 0) + videoRoutes.length,
+    (browseTotal ?? 0) + videoRoutes.length,
+    getStaticRoutes(new Date()).length,
   );
 
   return Array.from({ length: sitemapCount }, (_, id) => ({ id }));

@@ -1,24 +1,46 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import type * as FfmpegModule from "./ffmpeg";
 
 vi.mock("server-only", () => ({}));
-vi.mock("./render", () => ({
-  segmentRanges: () => [
-    { from: 0, to: 300 },
-    { from: 300, to: 400 },
-  ],
-  mixSoundtrack: vi.fn(async () => Buffer.from("sound")),
-  assembleMp4: vi.fn(async ({ segments }: { segments: Buffer[] }) =>
-    Buffer.concat(segments),
-  ),
-}));
+vi.mock("./store", () => ({ readVoiceClip: vi.fn() }));
+vi.mock("./ffmpeg", async (importActual) => {
+  const actual = await importActual<typeof FfmpegModule>();
+  return {
+    untilAborted: actual.untilAborted,
+    segmentRanges: vi.fn(() => [
+      { from: 0, to: 300 },
+      { from: 300, to: 400 },
+    ]),
+    mixSoundtrack: vi.fn(async () => Buffer.from("sound")),
+    planVerticalEdit: vi.fn(async () => [
+      [0.5, 6, 5.5],
+      [6, 7.5, 0.3],
+      [7.5, 12, 4.5],
+    ]),
+    assembleMp4: vi.fn(async ({ segments }: { segments: Buffer[] }) =>
+      Buffer.concat(segments),
+    ),
+  };
+});
 
 import { createHmac } from "node:crypto";
 import type { VideoArtifact } from "~/features/explainer/types";
-import { mixSoundtrack } from "./render";
+import {
+  assembleMp4,
+  mixSoundtrack,
+  planVerticalEdit,
+  segmentRanges,
+} from "./ffmpeg";
 import {
   encodeSegmentEvent,
+  isStaleRender,
+  RENDER_DEADLINE_MS,
   renderMp4InSegments,
+  SEGMENT_BUSY_HEADER,
+  segmentJobSchema,
+  SegmentFailure,
   verifySegmentJob,
+  withSegmentRetries,
   type RenderProgress,
   type SegmentEvent,
   type SegmentJob,
@@ -34,19 +56,47 @@ const job = (): SegmentJob => ({
   to: 600,
   exp: Date.now() + 60_000,
 });
+const fields = (value: SegmentJob) => [
+  value.username.toLowerCase(),
+  value.repo.toLowerCase(),
+  value.v,
+  value.format,
+  value.from,
+  value.to,
+  value.exp,
+];
+// Signed with a key derived for segment jobs alone, never the secret itself.
 const sign = (value: SegmentJob) =>
-  createHmac("sha256", "secret")
-    .update(
-      `video-segment:${[value.username.toLowerCase(), value.repo.toLowerCase(), value.v, value.format, value.from, value.to, value.exp].join("|")}`,
-    )
+  createHmac(
+    "sha256",
+    createHmac("sha256", "secret").update("video-segment-key/v1").digest(),
+  )
+    .update(JSON.stringify(fields(value)))
     .digest("hex");
+
+/** Run a promise to the end, moving the fake clock through its backoffs. */
+async function settle<T>(promise: Promise<T>): Promise<T> {
+  let done = false;
+  const result = promise.finally(() => {
+    done = true;
+  });
+  result.catch(() => undefined);
+  while (!done) await vi.advanceTimersByTimeAsync(1_000);
+  return result;
+}
 
 beforeEach(() => {
   process.env = { ...originalEnv, CACHE_KEY_SECRET: "secret" };
+  delete process.env.VIDEO_SEGMENT_FAN_OUT;
+  vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "Date"] });
+  vi.spyOn(console, "info").mockImplementation(() => undefined);
 });
 afterEach(() => {
   process.env = { ...originalEnv };
+  vi.useRealTimers();
   vi.unstubAllGlobals();
+  vi.clearAllMocks();
+  vi.restoreAllMocks();
 });
 
 describe("render segment signatures", () => {
@@ -62,9 +112,66 @@ describe("render segment signatures", () => {
     expect(verifySegmentJob({ ...value, format: "vertical" }, signature)).toBe(
       false,
     );
+    expect(verifySegmentJob({ ...value, format: "poster" }, signature)).toBe(
+      false,
+    );
     const expired = { ...value, exp: Date.now() - 1 };
     expect(verifySegmentJob(expired, sign(expired))).toBe(false);
     expect(verifySegmentJob(value, "nope")).toBe(false);
+  });
+
+  it("signs a feed cut's edit with the job, so no frame can be moved", () => {
+    const value: SegmentJob = {
+      ...job(),
+      format: "vertical",
+      edit: [
+        [0.5, 6, 5.5],
+        [6, 7.5, 0.3],
+      ],
+    };
+    const signature = createHmac(
+      "sha256",
+      createHmac("sha256", "secret").update("video-segment-key/v1").digest(),
+    )
+      .update(JSON.stringify([...fields(value), value.edit]))
+      .digest("hex");
+    expect(verifySegmentJob(value, signature)).toBe(true);
+    const moved: SegmentJob = {
+      ...value,
+      edit: [
+        [0.5, 6, 5.5],
+        [6, 7.5, 1.3],
+      ],
+    };
+    expect(verifySegmentJob(moved, signature)).toBe(false);
+    expect(verifySegmentJob({ ...value, edit: undefined }, signature)).toBe(
+      false,
+    );
+    expect(segmentJobSchema.safeParse(value).success).toBe(true);
+    expect(
+      segmentJobSchema.safeParse({ ...value, edit: [[0, 1, 0]] }).success,
+    ).toBe(false);
+  });
+
+  it("rejects a signature made with the cache secret itself", () => {
+    const value = job();
+    const payload = JSON.stringify(fields(value));
+    const direct = createHmac("sha256", "secret").update(payload).digest("hex");
+    const legacy = createHmac("sha256", "secret")
+      .update(`video-segment:${fields(value).join("|")}`)
+      .digest("hex");
+    expect(verifySegmentJob(value, direct)).toBe(false);
+    expect(verifySegmentJob(value, legacy)).toBe(false);
+  });
+
+  it("only accepts GitHub-shaped owner and repository names", () => {
+    expect(segmentJobSchema.safeParse(job()).success).toBe(true);
+    expect(
+      segmentJobSchema.safeParse({ ...job(), username: "../x" }).success,
+    ).toBe(false);
+    expect(segmentJobSchema.safeParse({ ...job(), repo: ".." }).success).toBe(
+      false,
+    );
   });
 });
 
@@ -75,53 +182,361 @@ describe("rendering in segments", () => {
   } as unknown as VideoArtifact;
   const answer = (events: SegmentEvent[]) =>
     new Response(events.map(encodeSegmentEvent).join(""));
-
-  it("reports progress frame by frame and joins the segments in order", async () => {
-    const fetchMock = vi.fn(async (_url: string, init: RequestInit) => {
-      const { from } = JSON.parse(String(init.body)) as SegmentJob;
-      return from === 0
-        ? answer([
-            { type: "ready", sfx: [] },
-            { type: "frames", done: 150 },
-            { type: "done", mp4: Buffer.from("A").toString("base64") },
-          ])
-        : answer([
-            { type: "ready", sfx: [] },
-            { type: "frames", done: 100 },
-            { type: "done", mp4: Buffer.from("B").toString("base64") },
-          ]);
-    });
-    vi.stubGlobal("fetch", fetchMock);
-    const progress: RenderProgress[] = [];
-    const mp4 = await renderMp4InSegments({
+  const done = (body: string): SegmentEvent => ({
+    type: "done",
+    mp4: Buffer.from(body).toString("base64"),
+  });
+  /** A segment still rendering: it only ends when its request is aborted. */
+  const rendering = (signal: AbortSignal) =>
+    new Response(
+      new ReadableStream({
+        start(controller) {
+          controller.enqueue(
+            new TextEncoder().encode(
+              encodeSegmentEvent({ type: "ready", sfx: [] }),
+            ),
+          );
+          signal.addEventListener("abort", () =>
+            controller.error(signal.reason),
+          );
+        },
+      }),
+    );
+  const render = (onProgress?: (value: RenderProgress) => void) =>
+    renderMp4InSegments({
       artifact,
       format: "landscape",
       origin: "https://example.com",
-      onProgress: (value) => progress.push(value),
+      onProgress,
     });
+  const bodyOf = (init: RequestInit) =>
+    JSON.parse(String(init.body)) as SegmentJob;
+
+  it("reports progress frame by frame and joins the segments in order", async () => {
+    const fetchMock = vi.fn(async (_url: string, init: RequestInit) =>
+      bodyOf(init).from === 0
+        ? answer([
+            { type: "ready", sfx: [] },
+            { type: "frames", done: 150 },
+            done("A"),
+          ])
+        : answer([
+            { type: "ready", sfx: [] },
+            { type: "frames", done: 90 },
+            done("B"),
+          ]),
+    );
+    vi.stubGlobal("fetch", fetchMock);
+    const progress: RenderProgress[] = [];
+    const mp4 = await settle(render((value) => progress.push(value)));
     expect(mp4.toString()).toBe("AB");
     expect(mixSoundtrack).toHaveBeenCalledTimes(1);
     expect(progress[0]).toEqual({ fraction: 0.02, step: "starting" });
+    // Frames the route never reported still count once a segment is done.
     const rendering = progress.filter((value) => value.step === "rendering");
-    expect(rendering.length).toBeGreaterThan(0);
-    expect(rendering.at(-1)!.fraction).toBeCloseTo(0.03 + 0.9 * (250 / 400));
+    expect(rendering.at(-1)!.fraction).toBeCloseTo(0.93);
     expect(progress.at(-1)).toEqual({ fraction: 1, step: "finishing" });
+    // Every attempt's signature outlives the render's deadline.
+    const signed = bodyOf(fetchMock.mock.calls[0]![1]);
+    expect(signed.exp).toBeGreaterThanOrEqual(Date.now() + RENDER_DEADLINE_MS);
   });
 
-  it("retries a segment that fails part way and fails if the retry does too", async () => {
-    vi.stubGlobal(
-      "fetch",
-      vi.fn(async () =>
-        answer([{ type: "frames", done: 10 }, { type: "error" }]),
-      ),
+  it("cuts the vertical MP4 once and hands the same cut to every segment and the soundtrack", async () => {
+    const fetchMock = vi.fn(async (_url: string, init: RequestInit) =>
+      answer([{ type: "ready", sfx: [] }, done(String(bodyOf(init).from))]),
     );
-    await expect(
+    vi.stubGlobal("fetch", fetchMock);
+    await settle(
       renderMp4InSegments({
         artifact,
         format: "vertical",
         origin: "https://example.com",
       }),
-    ).rejects.toThrow(/failed \(render\)/);
-    expect(fetch).toHaveBeenCalledTimes(4);
+    );
+    expect(planVerticalEdit).toHaveBeenCalledTimes(1);
+    const edit = await vi.mocked(planVerticalEdit).mock.results[0]!.value;
+    expect(segmentRanges).toHaveBeenCalledWith(artifact, edit);
+    for (const [, init] of fetchMock.mock.calls) {
+      const sent = bodyOf(init);
+      expect(sent.format).toBe("vertical");
+      expect(sent.edit).toEqual(edit);
+      expect(
+        verifySegmentJob(
+          sent,
+          String(new Headers(init.headers).get("X-Video-Segment")),
+        ),
+      ).toBe(true);
+    }
+    expect(mixSoundtrack).toHaveBeenCalledWith(
+      expect.objectContaining({ edit }),
+    );
+  });
+
+  it("leaves the landscape MP4 uncut", async () => {
+    const fetchMock = vi.fn(async () =>
+      answer([{ type: "ready", sfx: [] }, done("A")]),
+    );
+    vi.stubGlobal("fetch", fetchMock);
+    await settle(render());
+    expect(planVerticalEdit).not.toHaveBeenCalled();
+    expect(segmentRanges).toHaveBeenCalledWith(artifact, undefined);
+    expect(mixSoundtrack).toHaveBeenCalledWith(
+      expect.not.objectContaining({ edit: expect.anything() }),
+    );
+  });
+
+  it("never moves the progress bar backwards when a segment is retried", async () => {
+    let attempts = 0;
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (_url: string, init: RequestInit) => {
+        if (bodyOf(init).from !== 0)
+          return answer([{ type: "ready", sfx: [] }, done("B")]);
+        attempts++;
+        return attempts === 1
+          ? answer([{ type: "frames", done: 200 }, { type: "error" }])
+          : answer([
+              { type: "ready", sfx: [] },
+              { type: "frames", done: 50 },
+              { type: "frames", done: 250 },
+              done("A"),
+            ]);
+      }),
+    );
+    const progress: number[] = [];
+    await settle(render((value) => progress.push(value.fraction)));
+    expect(attempts).toBe(2);
+    expect(progress).toEqual([...progress].sort((a, b) => a - b));
+  });
+
+  it("gives up after three real failures and stops the other segments", async () => {
+    const siblings: AbortSignal[] = [];
+    const fetchMock = vi.fn(async (_url: string, init: RequestInit) => {
+      if (bodyOf(init).from === 0)
+        return answer([{ type: "frames", done: 10 }, { type: "error" }]);
+      siblings.push(init.signal!);
+      return rendering(init.signal!);
+    });
+    vi.stubGlobal("fetch", fetchMock);
+    await expect(settle(render())).rejects.toThrow(/failed \(render\)/);
+    const failing = fetchMock.mock.calls.filter(
+      ([, init]) => bodyOf(init).from === 0,
+    );
+    expect(failing).toHaveLength(3);
+    expect(siblings.length).toBeGreaterThan(0);
+    expect(siblings.every((signal) => signal.aborted)).toBe(true);
+  });
+
+  it("does not retry a job the segment route refuses", async () => {
+    const fetchMock = vi.fn(async (_url: string, init: RequestInit) =>
+      bodyOf(init).from === 0
+        ? new Response("{}", { status: 403 })
+        : rendering(init.signal!),
+    );
+    vi.stubGlobal("fetch", fetchMock);
+    await expect(settle(render())).rejects.toThrow(/failed \(403\)/);
+    expect(
+      fetchMock.mock.calls.filter(([, init]) => bodyOf(init).from === 0),
+    ).toHaveLength(1);
+  });
+
+  it("reports a video replaced mid-render as stale, without retrying", async () => {
+    const fetchMock = vi.fn(async (_url: string, init: RequestInit) =>
+      bodyOf(init).from === 0
+        ? new Response("{}", { status: 409 })
+        : rendering(init.signal!),
+    );
+    vi.stubGlobal("fetch", fetchMock);
+    const error = await settle(render()).catch((caught: unknown) => caught);
+    expect(isStaleRender(error)).toBe(true);
+    expect(
+      fetchMock.mock.calls.filter(([, init]) => bodyOf(init).from === 0),
+    ).toHaveLength(1);
+  });
+
+  it("keeps at most the fan-out of segment requests in flight", async () => {
+    process.env.VIDEO_SEGMENT_FAN_OUT = "3";
+    vi.mocked(segmentRanges).mockReturnValueOnce(
+      Array.from({ length: 8 }, (_, index) => ({
+        from: index * 150,
+        to: (index + 1) * 150,
+      })),
+    );
+    let inFlight = 0;
+    let most = 0;
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () => {
+        most = Math.max(most, ++inFlight);
+        await new Promise((resolve) => setTimeout(resolve, 2_000));
+        inFlight--;
+        return answer([{ type: "ready", sfx: [] }, done("S")]);
+      }),
+    );
+    const mp4 = await settle(render());
+    expect(mp4.toString()).toBe("SSSSSSSS");
+    expect(most).toBe(3);
+  });
+
+  it("logs how many busy answers a render met", async () => {
+    let busy = 0;
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (_url: string, init: RequestInit) => {
+        if (bodyOf(init).from === 0 && busy < 2) {
+          busy++;
+          return new Response("{}", {
+            status: 503,
+            headers: { [SEGMENT_BUSY_HEADER]: "1" },
+          });
+        }
+        return answer([{ type: "ready", sfx: [] }, done("X")]);
+      }),
+    );
+    await settle(render());
+    const logged = vi
+      .mocked(console.info)
+      .mock.calls.map(([line]) => JSON.parse(String(line)) as object);
+    expect(logged).toContainEqual(
+      expect.objectContaining({
+        event: "video.render.segments",
+        segments: 2,
+        busyRetries: 2,
+      }),
+    );
+  });
+
+  it("stops a stalled soundtrack when the render's deadline passes", async () => {
+    let mixSignal: AbortSignal | undefined;
+    vi.mocked(mixSoundtrack).mockImplementationOnce(
+      ({ signal }) =>
+        new Promise((_, reject) => {
+          mixSignal = signal;
+          signal?.addEventListener("abort", () => reject(signal.reason));
+        }),
+    );
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () => answer([{ type: "ready", sfx: [] }, done("X")])),
+    );
+    const deadline = new AbortController();
+    const running = renderMp4InSegments({
+      artifact,
+      format: "landscape",
+      origin: "https://example.com",
+      signal: deadline.signal,
+    });
+    running.catch(() => undefined);
+    await vi.advanceTimersByTimeAsync(5_000);
+    deadline.abort(new Error("The render ran out of time."));
+    await expect(running).rejects.toThrow(/ran out of time/);
+    expect(mixSignal?.aborted).toBe(true);
+    expect(assembleMp4).not.toHaveBeenCalled();
+  });
+
+  it("retries a request timeout, and waits out a rate limit as long as asked", async () => {
+    const refusals = [
+      new Response("{}", { status: 408 }),
+      new Response("{}", { status: 429, headers: { "Retry-After": "7" } }),
+    ];
+    const started = Date.now();
+    const calls: number[] = [];
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (_url: string, init: RequestInit) => {
+        if (bodyOf(init).from !== 0)
+          return answer([{ type: "ready", sfx: [] }, done("B")]);
+        calls.push(Date.now() - started);
+        return refusals.shift() ?? answer([done("A")]);
+      }),
+    );
+    expect((await settle(render())).toString()).toBe("AB");
+    expect(calls).toHaveLength(3);
+    // The rate limit's own wait, not the short busy backoff.
+    expect(calls[2]! - calls[1]!).toBeGreaterThanOrEqual(7_000);
+  });
+
+  it("hands the deadline to the final join", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () => answer([{ type: "ready", sfx: [] }, done("X")])),
+    );
+    const deadline = new AbortController();
+    await settle(
+      renderMp4InSegments({
+        artifact,
+        format: "landscape",
+        origin: "https://example.com",
+        signal: deadline.signal,
+      }),
+    );
+    const { signal } = vi.mocked(assembleMp4).mock.calls[0]![0];
+    expect(signal).toBeDefined();
+    deadline.abort();
+    expect(signal!.aborted).toBe(true);
+  });
+
+  it("waits out busy render instances without spending retries", async () => {
+    let busy = 0;
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (_url: string, init: RequestInit) => {
+        if (bodyOf(init).from === 0 && busy < 5) {
+          busy++;
+          return new Response("{}", {
+            status: 503,
+            headers: { [SEGMENT_BUSY_HEADER]: "1" },
+          });
+        }
+        return answer([{ type: "ready", sfx: [] }, done("X")]);
+      }),
+    );
+    await expect(settle(render())).resolves.toEqual(Buffer.from("XX"));
+    expect(busy).toBe(5);
+  });
+});
+
+describe("segment retries", () => {
+  it("stop when the deadline leaves no room for another attempt", async () => {
+    const attempt = vi.fn(async () => {
+      throw new SegmentFailure("flaky", "retry");
+    });
+    await expect(
+      settle(
+        withSegmentRetries(attempt, {
+          deadline: Date.now() + 5_000,
+          signal: new AbortController().signal,
+        }),
+      ),
+    ).rejects.toThrow(/ran out of time/);
+    expect(attempt).not.toHaveBeenCalled();
+  });
+
+  it("retry a network error and a 5xx, but not a final failure", async () => {
+    const attempt = vi
+      .fn<() => Promise<string>>()
+      .mockRejectedValueOnce(new TypeError("fetch failed"))
+      .mockRejectedValueOnce(new SegmentFailure("502", "retry"))
+      .mockResolvedValueOnce("ok");
+    await expect(
+      settle(
+        withSegmentRetries(attempt, {
+          deadline: Date.now() + 600_000,
+          signal: new AbortController().signal,
+        }),
+      ),
+    ).resolves.toBe("ok");
+    const final = vi.fn(async () => {
+      throw new SegmentFailure("403", "final");
+    });
+    await expect(
+      settle(
+        withSegmentRetries(final, {
+          deadline: Date.now() + 600_000,
+          signal: new AbortController().signal,
+        }),
+      ),
+    ).rejects.toThrow("403");
+    expect(final).toHaveBeenCalledTimes(1);
   });
 });

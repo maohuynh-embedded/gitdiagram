@@ -2,14 +2,36 @@ import type * as S3Sdk from "@aws-sdk/client-s3";
 import { promisify } from "node:util";
 import { gunzip, gzip } from "node:zlib";
 
+import { cloudflareContext } from "~/server/cloudflare-context";
+
 import { assertLiveStorageAllowedForTests, readRequiredEnv } from "./config";
 
 let client: S3Sdk.S3Client | null = null;
 let s3ModulePromise: Promise<typeof S3Sdk> | null = null;
+/** The most one small R2 call may take, its retries included. */
 export const R2_REQUEST_TIMEOUT_MS = 10_000;
+/**
+ * The most one attempt at a small request may take. The SDK makes up to three
+ * attempts, and each gets its own timeout: a single stalled attempt used to
+ * spend the whole budget, so a slow R2 answer failed the page outright.
+ */
+export const R2_ATTEMPT_TIMEOUT_MS = 3_000;
+const R2_MAX_ATTEMPTS = 3;
 
 const gzipAsync = promisify(gzip);
 const gunzipAsync = promisify(gunzip);
+
+/**
+ * The JSON bytes of an object stored gzipped with `Content-Encoding: gzip`.
+ * Node's handler returns it as stored. A Worker's `fetch` has already
+ * decompressed it, so only bytes that still start with the gzip signature are
+ * inflated (JSON never starts with 0x1f).
+ */
+async function gunzipStored(body: Uint8Array): Promise<Buffer> {
+  return body[0] === 0x1f && body[1] === 0x8b
+    ? gunzipAsync(body)
+    : Buffer.from(body.buffer, body.byteOffset, body.byteLength);
+}
 
 export interface ObjectReadResult<T> {
   value: T;
@@ -18,8 +40,41 @@ export interface ObjectReadResult<T> {
 
 export type ObjectWriteCondition = { ifMatch: string } | { ifNoneMatch: true };
 
-function requestOptions() {
-  return { abortSignal: AbortSignal.timeout(R2_REQUEST_TIMEOUT_MS) };
+/**
+ * Per-call timeouts: one per attempt (a request body of `bytes`, such as an
+ * MP4 upload, gets a second more per MB) and one over every attempt.
+ */
+function requestOptions(bytes = 0) {
+  const attempt = R2_ATTEMPT_TIMEOUT_MS + Math.ceil(bytes / 2 ** 20) * 1_000;
+  return {
+    requestTimeout: attempt,
+    abortSignal: AbortSignal.timeout(
+      Math.max(R2_REQUEST_TIMEOUT_MS, attempt * R2_MAX_ATTEMPTS + 1_000),
+    ),
+  };
+}
+
+/**
+ * How the client sends requests. On Node, the SDK's own handler with our
+ * timeouts. On Cloudflare Workers that handler runs on an emulation of Node's
+ * sockets whose pooled connections outlive the request that opened them:
+ * about one R2 call in ten made after a response (the browse index update)
+ * failed with "socket did not establish a connection". There the client uses
+ * the platform's `fetch`, as the SDK does in its own Worker builds.
+ */
+async function requestHandler() {
+  if (!cloudflareContext())
+    return {
+      connectionTimeout: 2_000,
+      requestTimeout: R2_ATTEMPT_TIMEOUT_MS,
+      // Without this an attempt past its timeout only logs a warning.
+      throwOnRequestTimeout: true,
+    };
+  const { FetchHttpHandler } = await import("@smithy/fetch-http-handler");
+  return new FetchHttpHandler({
+    requestTimeout: R2_ATTEMPT_TIMEOUT_MS,
+    keepAlive: false,
+  });
 }
 
 async function getClient() {
@@ -35,6 +90,13 @@ async function getClient() {
       accessKeyId: readRequiredEnv("R2_ACCESS_KEY_ID"),
       secretAccessKey: readRequiredEnv("R2_SECRET_ACCESS_KEY"),
     },
+    maxAttempts: R2_MAX_ATTEMPTS,
+    requestHandler: await requestHandler(),
+    // A Worker's `fetch` decompresses gzipped objects before the SDK sees
+    // them, so the stored checksum (of the compressed bytes) cannot match.
+    ...(cloudflareContext()
+      ? { responseChecksumValidation: "WHEN_REQUIRED" as const }
+      : {}),
   });
 
   return { client, s3 };
@@ -132,7 +194,7 @@ export async function putBinaryObject(
       Body: body,
       ContentType: contentType,
     }),
-    requestOptions(),
+    requestOptions(body.byteLength),
   );
 }
 
@@ -164,20 +226,28 @@ export async function listObjects(
   return objects;
 }
 
-export async function hasObject(bucket: string, key: string): Promise<boolean> {
+/** An object's last-modified time, or null if it does not exist. */
+export async function getObjectInfo(
+  bucket: string,
+  key: string,
+): Promise<{ lastModified: Date | null } | null> {
   try {
     const { client: storageClient, s3 } = await getClient();
-    await storageClient.send(
+    const response = await storageClient.send(
       new s3.HeadObjectCommand({ Bucket: bucket, Key: key }),
       requestOptions(),
     );
-    return true;
+    return { lastModified: response.LastModified ?? null };
   } catch (error) {
     if (isNotFoundError(error)) {
-      return false;
+      return null;
     }
     throw error;
   }
+}
+
+export async function hasObject(bucket: string, key: string): Promise<boolean> {
+  return (await getObjectInfo(bucket, key)) !== null;
 }
 
 /** A short-lived signed GET URL that downloads the object under `filename`. */
@@ -218,7 +288,7 @@ export async function getGzipJsonObject<T>(
       return null;
     }
 
-    const decompressed = await gunzipAsync(body);
+    const decompressed = await gunzipStored(body);
     return JSON.parse(decompressed.toString("utf8")) as T;
   } catch (error) {
     if (isNotFoundError(error)) {
@@ -250,7 +320,7 @@ export async function getGzipJsonObjectWithEtag<T>(
       throw new Error(`R2 object ${key} did not include an ETag.`);
     }
 
-    const decompressed = await gunzipAsync(body);
+    const decompressed = await gunzipStored(body);
     return {
       value: JSON.parse(decompressed.toString("utf8")) as T,
       etag: response.ETag,

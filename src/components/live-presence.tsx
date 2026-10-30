@@ -3,16 +3,44 @@
 import { usePathname } from "next/navigation";
 import { useEffect, useRef } from "react";
 
+import { reconnectDelay } from "~/features/admin/live-link";
+import {
+  HIDDEN_REPORT_MS,
+  MAX_PATH,
+  PING_MS,
+} from "~/features/admin/presence-protocol";
+
 // Each open tab holds one small WebSocket to the presence worker
 // (workers/presence), so the operator's dashboard counts exactly who is on the
 // site right now. It sends only the path, whether the tab is in view, desktop
-// or mobile, the referring site, the browser's time zone setting, and a random
-// id this browser keeps so several tabs count as one person. It opens once the page is idle, never retries
-// hard, and closes on pagehide so the back/forward cache still works.
+// or mobile, the referring site (its origin: never the page or query it came
+// from), the browser's time zone setting, and a random id this browser keeps
+// so several tabs count as one person.
+//
+// The count is meant to be people really looking at the site, as soon as they
+// are. So the socket opens once the tab has been in view for two seconds in
+// all: long enough that a page prefetched or opened and closed at once, or a
+// tab opened in the background and never looked at, never connects; short
+// enough that a real short visit is counted. (It was 15 seconds while the
+// worker ran on Cloudflare's free daily requests; on the paid plan a
+// connection costs next to nothing.) It retries gently with random spacing
+// (so a worker deploy does not bring every tab back at once) and stops after
+// a few failures until the tab is used again, skips automated browsers, and
+// closes on pagehide so the back/forward cache still works. It only reports a
+// page or visibility that changed (the worker closes a tab that sends more
+// than a person would), and says it went out of view once it has been for a
+// few seconds, so flicking past another tab sends nothing.
+//
+// Paths are sent as they are, repository pages included. Whether a
+// repository is private is not known here cheaply (the GitHub token is
+// HttpOnly), so a private repository viewed with the visitor's own token
+// shows by name on the operator's dashboard (and only there).
 
 const PRESENCE_URL = process.env.NEXT_PUBLIC_PRESENCE_URL?.replace(/\/$/, "");
-const PING_MS = 30_000;
+const IN_VIEW_BEFORE_OPEN_MS = 2_000;
 const MAX_FAILURES = 6;
+const STORAGE_KEY = "gd-presence-id";
+const ID = /^[a-z0-9]{8,24}$/;
 
 function isMobile(): boolean {
   const data = (
@@ -26,49 +54,114 @@ function isMobile(): boolean {
 }
 
 const skipped = (path: string) => path.startsWith("/admin");
+const clipPath = (path: string) => path.slice(0, MAX_PATH);
 
-/** A random id shared by this browser's tabs; nothing else is stored. */
+/** Where the visitor came from, as an origin ("https://news.example"), or "". */
+function referrerOrigin(): string {
+  try {
+    const origin = new URL(document.referrer).origin;
+    return origin === "null" ? "" : origin;
+  } catch {
+    return "";
+  }
+}
+
+let memoryId: string | null = null;
+
+/**
+ * A random id shared by this browser's tabs; nothing else is stored. Where
+ * localStorage is blocked, the tab keeps one for itself (for its reloads, in
+ * sessionStorage, or for its life), so it is at least one person, not one per
+ * reconnect.
+ */
 function browserId(): string {
   const fresh = () =>
     crypto
       .getRandomValues(new Uint32Array(3))
-      .reduce((id, part) => id + part.toString(36), "");
-  try {
-    const stored = localStorage.getItem("gd-presence-id");
-    if (stored && /^[a-z0-9]{8,24}$/.test(stored)) return stored;
-    const id = fresh().slice(0, 16);
-    localStorage.setItem("gd-presence-id", id);
-    return id;
-  } catch {
-    return "";
+      .reduce((id, part) => id + part.toString(36), "")
+      .slice(0, 16);
+  for (const name of ["localStorage", "sessionStorage"] as const) {
+    try {
+      const storage = window[name];
+      const stored = storage.getItem(STORAGE_KEY);
+      if (stored && ID.test(stored)) return stored;
+      const id = memoryId ?? fresh();
+      storage.setItem(STORAGE_KEY, id);
+      memoryId = id;
+      return id;
+    } catch {
+      // Blocked: try the next place.
+    }
   }
+  memoryId ??= fresh();
+  return memoryId;
 }
 
 export function LivePresence() {
   const pathname = usePathname();
   const path = useRef(pathname);
   const socket = useRef<WebSocket | null>(null);
-  const reopen = useRef<() => void>(() => undefined);
+  // Set by the effect below: report a new page, or open now if we may.
+  const control = useRef<{ navigated: () => void } | null>(null);
 
   useEffect(() => {
-    if (!PRESENCE_URL) return;
+    if (!PRESENCE_URL || navigator.webdriver) return;
     let stopped = false;
     let failures = 0;
     let retry: ReturnType<typeof setTimeout> | undefined;
+    // What the worker was last told about this tab, so nothing is sent twice.
+    let told = { p: "", v: "" };
+    // When the tab went out of view (null while in view), and the timer that
+    // tells the worker once it has been out of view long enough.
+    let hiddenAt: number | null = null;
+    let hiddenReport: ReturnType<typeof setTimeout> | undefined;
+    // How long the tab has been in view in all, counted up to viewedSince.
+    let viewedMs = 0;
+    let viewedSince: number | null = null;
 
     const visible = () => (document.visibilityState === "visible" ? "1" : "0");
+    if (visible() === "1") viewedSince = Date.now();
+    const viewed = () =>
+      viewedMs + (viewedSince === null ? 0 : Date.now() - viewedSince);
+    /** Visibility as the worker hears it: hidden only after a while. */
+    const reported = () =>
+      hiddenAt !== null && Date.now() - hiddenAt >= HIDDEN_REPORT_MS
+        ? "0"
+        : "1";
     const send = (message: string) => {
       if (socket.current?.readyState === WebSocket.OPEN)
         socket.current.send(message);
     };
+    /** Tells the worker the page and visibility, where either changed. */
+    const report = () => {
+      if (socket.current?.readyState !== WebSocket.OPEN) return;
+      const p = clipPath(path.current);
+      if (p !== told.p && !skipped(p)) {
+        send(`p:${p}`);
+        told.p = p;
+      }
+      const v = reported();
+      if (v !== told.v) {
+        send(`v:${v}`);
+        told.v = v;
+      }
+    };
 
     const open = () => {
+      clearTimeout(retry);
+      retry = undefined;
       if (stopped || socket.current || skipped(path.current)) return;
+      if (visible() !== "1") return; // the visibility handler opens it later
+      const wait = IN_VIEW_BEFORE_OPEN_MS - viewed();
+      if (wait > 0) {
+        retry = setTimeout(open, wait);
+        return;
+      }
+      told = { p: clipPath(path.current), v: reported() };
       const params = new URLSearchParams({
-        p: path.current,
-        v: visible(),
+        ...told,
         d: isMobile() ? "m" : "d",
-        r: document.referrer,
+        r: referrerOrigin(),
         b: browserId(),
         z: Intl.DateTimeFormat().resolvedOptions().timeZone ?? "",
       });
@@ -76,34 +169,66 @@ export function LivePresence() {
       socket.current = ws;
       ws.onopen = () => {
         failures = 0;
+        report(); // pages and visibility that changed while connecting
       };
       ws.onclose = (event) => {
         if (socket.current === ws) socket.current = null;
         if (stopped) return;
         // The worker closes a tab that went quiet (a frozen background tab):
         // come back as soon as someone looks at it again.
-        if (event.code === 1000 && document.visibilityState !== "visible")
-          return;
+        if (event.code === 1000 && visible() !== "1") return;
         failures += 1;
         if (failures > MAX_FAILURES) return;
-        retry = setTimeout(open, Math.min(60_000, 2_000 * 2 ** failures));
+        retry = setTimeout(open, reconnectDelay(failures));
       };
     };
 
-    reopen.current = open;
-
+    /** Closes the socket on purpose: not a failure, and nothing to retry. */
     const close = () => {
       clearTimeout(retry);
-      socket.current?.close(1000);
+      retry = undefined;
+      const ws = socket.current;
       socket.current = null;
+      if (!ws) return;
+      ws.onclose = null;
+      ws.close(1000);
     };
+
+    // Someone is using the tab again. Start over if retries ran out; if one
+    // is already waiting, let it run rather than reconnect at once (during
+    // an outage every page change would otherwise be another attempt).
+    const revive = () => {
+      if (socket.current) return;
+      if (failures > MAX_FAILURES) failures = 0;
+      else if (retry !== undefined) return;
+      open();
+    };
+
+    control.current = {
+      navigated() {
+        if (!socket.current) revive();
+        else if (skipped(path.current)) close();
+        else report(); // still connecting: it reports once it opens
+      },
+    };
+
     const onVisibility = () => {
-      if (socket.current) send(`v:${visible()}`);
-      else if (visible() === "1") {
-        failures = 0;
-        clearTimeout(retry);
-        open();
+      clearTimeout(hiddenReport);
+      const now = Date.now();
+      if (visible() === "1") {
+        viewedSince ??= now;
+        hiddenAt = null;
+        // Pings may have been slowed while out of view, and the worker takes
+        // a tab in view that misses a few to be gone: say it is here now.
+        send("ping");
+      } else {
+        if (viewedSince !== null) viewedMs += now - viewedSince;
+        viewedSince = null;
+        hiddenAt ??= now;
+        hiddenReport = setTimeout(report, hiddenAt + HIDDEN_REPORT_MS - now);
       }
+      if (socket.current) report();
+      else if (visible() === "1") revive();
     };
     const onPageHide = () => {
       stopped = true;
@@ -114,17 +239,16 @@ export function LivePresence() {
       stopped = false;
       open();
     };
-
-    if ("requestIdleCallback" in window)
-      window.requestIdleCallback(open, { timeout: 5_000 });
-    else setTimeout(open, 1_500);
+    open();
     const ping = setInterval(() => send("ping"), PING_MS);
     document.addEventListener("visibilitychange", onVisibility);
     window.addEventListener("pagehide", onPageHide);
     window.addEventListener("pageshow", onPageShow);
     return () => {
       stopped = true;
+      control.current = null;
       clearInterval(ping);
+      clearTimeout(hiddenReport);
       close();
       document.removeEventListener("visibilitychange", onVisibility);
       window.removeEventListener("pagehide", onPageHide);
@@ -133,18 +257,8 @@ export function LivePresence() {
   }, []);
 
   useEffect(() => {
-    const leftSkipped = skipped(path.current) && !skipped(pathname);
     path.current = pathname;
-    if (!socket.current) {
-      if (leftSkipped) reopen.current();
-      return;
-    }
-    if (skipped(pathname)) {
-      socket.current.close(1000);
-      socket.current = null;
-    } else if (socket.current.readyState === WebSocket.OPEN) {
-      socket.current.send(`p:${pathname}`);
-    }
+    control.current?.navigated();
   }, [pathname]);
 
   return null;

@@ -3,14 +3,18 @@
 import { useEffect, useEffectEvent, useRef, useState } from "react";
 import DOMPurify from "dompurify";
 import mermaid from "mermaid";
-import elkLayouts from "@mermaid-js/layout-elk";
 import { useTheme } from "next-themes";
 
 import { MermaidDiagramToolbar } from "~/components/mermaid-diagram-toolbar";
 import {
   createHiddenRenderTarget,
   withDomNodesSerializingSafely,
+  ZOOM_STEP,
 } from "~/components/mermaid-diagram-helpers";
+import {
+  buildMermaidConfig,
+  MERMAID_SVG_SANITIZE_OPTIONS,
+} from "~/features/diagram/mermaid-config";
 import {
   enforceSafeMermaidLinks,
   sanitizeMermaidSourceForRender,
@@ -36,9 +40,6 @@ const INTERACTIVE_VIEWER_PROPS = {
   role: "region",
   tabIndex: 0,
 };
-
-let elkLayoutRegistered = false;
-type MermaidLayoutLoaders = Parameters<typeof mermaid.registerLayoutLoaders>[0];
 
 const MermaidChart = ({
   chart,
@@ -93,72 +94,7 @@ const MermaidChart = ({
   useEffect(() => {
     let cancelled = false;
 
-    if (!elkLayoutRegistered) {
-      mermaid.registerLayoutLoaders(elkLayouts as MermaidLayoutLoaders);
-      elkLayoutRegistered = true;
-    }
-
-    const baseConfig = {
-      startOnLoad: false,
-      suppressErrorRendering: true,
-      securityLevel: "antiscript" as const,
-      secure: ["securityLevel", "startOnLoad", "maxTextSize"],
-      theme: "base" as const,
-      // Pure SVG labels survive strict sanitization without relying on
-      // foreignObject HTML, which is both harder to secure and less portable.
-      htmlLabels: false,
-      flowchart: {
-        defaultRenderer: "elk" as const,
-        curve: "linear" as const,
-        nodeSpacing: 50,
-        rankSpacing: 50,
-        padding: 15,
-      },
-      themeVariables: isDark
-        ? {
-            background: backgroundColor ?? "#1f2631",
-            primaryColor: "#2c3544",
-            primaryBorderColor: "#6dd4e9",
-            primaryTextColor: "#e8edf5",
-            lineColor: "#ffd486",
-            secondaryColor: "#26303f",
-            tertiaryColor: "#323d4d",
-          }
-        : {
-            background: backgroundColor ?? "#ffffff",
-            primaryColor: "#f7f7f7",
-            primaryBorderColor: "#000000",
-            primaryTextColor: "#171717",
-            lineColor: "#000000",
-            secondaryColor: "#f0f0f0",
-            tertiaryColor: "#f7f7f7",
-          },
-      themeCSS: `
-        .clickable > * {
-          scale: 1;
-          transform-box: fill-box;
-          transform-origin: center;
-          transition: scale 160ms cubic-bezier(0.23, 1, 0.32, 1);
-        }
-        .clickable {
-          cursor: pointer;
-        }
-        @media (hover: hover) and (pointer: fine) {
-          .clickable:hover > * {
-            scale: 1.05;
-            filter: brightness(0.85);
-          }
-        }
-        @media (prefers-reduced-motion: reduce) {
-          .clickable > * {
-            transition: none;
-          }
-          .clickable:hover > * {
-            scale: 1;
-          }
-        }
-      `,
-    };
+    const baseConfig = buildMermaidConfig({ isDark, backgroundColor });
 
     const renderDiagram = async () => {
       const mermaidElement = diagramRef.current;
@@ -185,10 +121,10 @@ const MermaidChart = ({
         if (cancelled) return;
 
         mermaidElement.textContent = "";
-        mermaidElement.innerHTML = DOMPurify.sanitize(svg, {
-          USE_PROFILES: { html: true, svg: true, svgFilters: true },
-          FORBID_TAGS: ["script"],
-        });
+        mermaidElement.innerHTML = DOMPurify.sanitize(
+          svg,
+          MERMAID_SVG_SANITIZE_OPTIONS,
+        );
         enforceSafeMermaidLinks(mermaidElement);
         bindFunctions?.(mermaidElement);
         setRenderVersion((currentVersion) => currentVersion + 1);
@@ -265,9 +201,9 @@ const MermaidChart = ({
           <MermaidDiagramToolbar
             formattedZoom={formattedZoom}
             isPanZoomReady={isPanZoomReady}
-            onFit={() => fitDiagram(true)}
-            onZoomIn={() => stepZoom(1.18)}
-            onZoomOut={() => stepZoom(1 / 1.18)}
+            onFit={() => fitDiagram(true, true)}
+            onZoomIn={() => stepZoom(ZOOM_STEP)}
+            onZoomOut={() => stepZoom(1 / ZOOM_STEP)}
           />
         )}
         <div

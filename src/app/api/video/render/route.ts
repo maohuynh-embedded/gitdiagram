@@ -6,11 +6,16 @@ import {
   githubUsernameSchema,
 } from "~/server/generate/types";
 import { getClientIp } from "~/server/http/client-ip";
+import { errorText, logEvent } from "~/server/log";
 import {
   jsonErrorResponse,
+  NO_STORE_RESPONSE_HEADERS,
   parseSameOriginJsonRequest,
 } from "~/server/http/same-origin-json";
 import { emitLiveEvent } from "~/server/admin/live-events";
+import { beginWork } from "~/server/drain";
+import { refreshVideoPages } from "~/server/explainer/cache";
+import { openRun, reapOrphanedRuns } from "~/server/explainer/run-journal";
 import { isVideoExplainerEnabled } from "~/server/explainer/config";
 import {
   isTrustedVideoCaller,
@@ -19,8 +24,17 @@ import {
   tryVideoLock,
   type Reservation,
 } from "~/server/explainer/limits";
-import { storePoster } from "~/server/explainer/posters";
-import { renderMp4InSegments } from "~/server/explainer/segments";
+import { untilAborted } from "~/server/explainer/ffmpeg";
+import {
+  internalOrigin,
+  segmentOrigin,
+} from "~/server/explainer/render-origin";
+import {
+  isStaleRender,
+  remakePosterRemotely,
+  RENDER_TOTAL_DEADLINE_MS,
+  renderMp4InSegments,
+} from "~/server/explainer/segments";
 import {
   hasRender,
   readVideoArtifact,
@@ -42,7 +56,14 @@ const requestSchema = z.strictObject({
   repo: githubRepoSchema,
   // "poster" (re)makes the link-preview still; operator only.
   format: z.enum(["landscape", "vertical", "poster"]),
+  // The version (createdAt) of the video the viewer has open. Optional so a
+  // tab loaded before this field existed, or the operator's poster call,
+  // still works.
+  v: z.iso.datetime().optional(),
 });
+
+const STALE_MESSAGE =
+  "This video was just updated. Reload the page to get the new one.";
 
 /**
  * Make a video's MP4 once, then serve the stored file forever. The response is
@@ -63,17 +84,27 @@ async function render(request: Request, visitor: Visitor): Promise<Response> {
     crossOriginError: "Video downloads must come from GitDiagram.",
   });
   if (!parsed.success) return parsed.response;
-  const { username, repo, format } = parsed.data;
+  const { username, repo, format, v } = parsed.data;
   const artifact = await readVideoArtifact(username, repo);
   if (!artifact) return jsonErrorResponse("This video does not exist.", 404);
+  // The viewer has an older version open: its MP4 would not match what they
+  // watched, and its files are on their way out.
+  if (v && v !== artifact.createdAt)
+    return Response.json(
+      { ok: false, error: STALE_MESSAGE, stale: true },
+      { status: 409, headers: NO_STORE_RESPONSE_HEADERS },
+    );
   const events = (list: VideoRenderEvent[]) =>
     new Response(list.map((e) => `data: ${JSON.stringify(e)}\n\n`).join(""), {
       headers: { "Content-Type": "text/event-stream; charset=utf-8" },
     });
   if (format === "poster") {
-    if (!isTrustedVideoCaller(request))
+    if (!(await isTrustedVideoCaller(request)))
       return jsonErrorResponse("Forbidden.", 403);
-    const stored = await storePoster(artifact, new URL(request.url).origin);
+    // Rendered on a render instance, so this route never ships Chromium.
+    const stored = await remakePosterRemotely(artifact, segmentOrigin(request));
+    // The new poster has a new URL; point the pages that show it there.
+    if (stored) refreshVideoPages(username, repo);
     return events([
       stored
         ? { status: "complete" }
@@ -86,39 +117,69 @@ async function render(request: Request, visitor: Visitor): Promise<Response> {
   let reservation: Reservation | null = null;
   let releaseLock: (() => Promise<void>) | null = null;
   try {
-    if (!isTrustedVideoCaller(request)) {
-      reservation = await reserveRenderSlot({
-        visitorId: visitor.id,
-        clientIp: getClientIp(request),
-      });
-      if (!reservation.ok)
-        return jsonErrorResponse(renderLimitMessage(reservation.reason), 429);
-    }
     if (process.env.NODE_ENV === "production") {
+      // A render that died mid-way gives back its place before this one
+      // asks for its own.
+      await reapOrphanedRuns();
       releaseLock = await tryVideoLock(
         `render:${artifact.repository}:${artifact.createdAt}:${format}`,
         14 * 60_000,
       );
-      if (!releaseLock) {
-        if (reservation?.ok) await reservation.refund();
+      if (!releaseLock)
         return jsonErrorResponse(
           "This MP4 is being made right now. Try again in a minute or two.",
           409,
         );
+      // Another render may have stored it between the first check and the lock.
+      if (await hasRender(artifact, name)) {
+        await releaseLock();
+        return events([{ status: "complete" }]);
+      }
+    }
+    if (!(await isTrustedVideoCaller(request))) {
+      reservation = await reserveRenderSlot({
+        visitorId: visitor.id,
+        clientIp: getClientIp(request),
+      });
+      if (!reservation.ok) {
+        await releaseLock?.();
+        return jsonErrorResponse(renderLimitMessage(reservation.reason), 429);
       }
     }
   } catch {
     if (reservation?.ok) await reservation.refund();
+    await releaseLock?.();
     return jsonErrorResponse(
       "Downloads are unavailable right now. Try again soon.",
       503,
     );
   }
 
-  const origin = new URL(request.url).origin;
+  const origin = internalOrigin(request);
+  // One deadline for the whole render, storing included, inside maxDuration.
+  const deadline = AbortSignal.timeout(RENDER_TOTAL_DEADLINE_MS);
+  // Once a segment request has gone out, Chromium and ffmpeg are running on
+  // our side. From then on a failure keeps its place in the budget, so a
+  // video that keeps failing (even at the very end, storing the file) cannot
+  // be rendered over and over for free.
+  let computeStarted = false;
+  const refundIfUnspent = async () => {
+    if (reservation?.ok && !computeStarted) await reservation.refund();
+  };
   const encoder = new TextEncoder();
   let closed = false;
   let job: Promise<void> = Promise.resolve();
+  const started = Date.now();
+  const jobId = `render:${artifact.repository}:${format}:${started}`;
+  // If this server is killed mid-render nothing below runs; the journal is
+  // how the reservation is given back and the loss reported.
+  const journal = openRun({
+    kind: "render",
+    repository: artifact.repository,
+    format,
+    refund: reservation?.ok ? reservation.keys : [],
+    jobId,
+  });
   const stream = new ReadableStream<Uint8Array>({
     start(controller) {
       const send = (event: VideoRenderEvent) => {
@@ -131,21 +192,36 @@ async function render(request: Request, visitor: Visitor): Promise<Response> {
           closed = true;
         }
       };
-      const started = Date.now();
-      const jobId = `render:${artifact.repository}:${format}:${started}`;
       const label = `${artifact.repository} (${format} MP4)`;
       let outcome: "complete" | "error" = "error";
+      let failure: string | undefined;
       void emitLiveEvent({
         kind: "render.started",
         repo: artifact.repository,
         format,
         job: { id: jobId, state: "start", label },
       });
+      // The video was regenerated while this rendered, so its file would not
+      // be kept. Only the operator regenerates, so the viewer gets their
+      // place in the budget back.
+      const superseded = async () => {
+        logEvent("info", "video.render.superseded", {
+          repository: artifact.repository,
+          format,
+        });
+        send({ status: "error", error: STALE_MESSAGE });
+        if (reservation?.ok) await reservation.refund();
+      };
       let last = "";
       job = renderMp4InSegments({
         artifact,
         format,
         origin,
+        segmentOrigin: segmentOrigin(request),
+        signal: deadline,
+        onStarted: () => {
+          computeStarted = true;
+        },
         onProgress: ({ fraction, step }) => {
           const percent = Math.floor(fraction * 100);
           if (`${step}:${percent}` === last) return;
@@ -154,36 +230,41 @@ async function render(request: Request, visitor: Visitor): Promise<Response> {
         },
       })
         .then(async (mp4) => {
-          await writeRender(artifact, name, mp4);
-          console.info(
-            JSON.stringify({
-              event: "video.render.stored",
-              repository: artifact.repository,
-              format,
-              bytes: mp4.byteLength,
-              ms: Date.now() - started,
-            }),
+          // A regenerated video replaced this one while it rendered: its
+          // folder is no longer current, so the file is not kept. (If the
+          // check itself fails, keeping a finished MP4 is the better bet.)
+          const current = await readVideoArtifact(username, repo).catch(
+            () => artifact,
           );
+          if (current?.createdAt !== artifact.createdAt) {
+            await superseded();
+            return;
+          }
+          await untilAborted(writeRender(artifact, name, mp4), deadline);
+          logEvent("info", "video.render.stored", {
+            repository: artifact.repository,
+            format,
+            bytes: mp4.byteLength,
+            ms: Date.now() - started,
+          });
           outcome = "complete";
           send({ status: "complete" });
         })
         .catch(async (error: unknown) => {
-          console.error(
-            JSON.stringify({
-              event: "video.render.failed",
-              repository: artifact.repository,
-              format,
-              error:
-                error instanceof Error
-                  ? error.message.slice(0, 300)
-                  : "unknown",
-            }),
-          );
+          // A segment found the video replaced while it rendered.
+          if (isStaleRender(error)) return superseded();
+          failure = errorText(error, 300);
+          logEvent("error", "video.render.failed", {
+            repository: artifact.repository,
+            format,
+            computeStarted,
+            error: errorText(error, 300),
+          });
           send({
             status: "error",
             error: "The MP4 could not be made. Try again.",
           });
-          if (reservation?.ok) await reservation.refund();
+          await refundIfUnspent();
         })
         .finally(async () => {
           if (!closed) {
@@ -191,6 +272,7 @@ async function render(request: Request, visitor: Visitor): Promise<Response> {
             controller.close();
           }
           await releaseLock?.();
+          await journal.close(outcome, failure);
           await emitLiveEvent({
             kind: "render.finished",
             repo: artifact.repository,
@@ -205,8 +287,10 @@ async function render(request: Request, visitor: Visitor): Promise<Response> {
       closed = true;
     },
   });
-  // A render finishes and is stored even if the viewer leaves.
-  after(() => job);
+  // A render finishes and is stored even if the viewer leaves, and before a
+  // container that is told to stop exits (drain.ts).
+  const endWork = beginWork();
+  after(() => job.finally(endWork));
 
   return new Response(stream, {
     headers: {

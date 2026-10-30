@@ -1,5 +1,7 @@
 import type { PostHog } from "posthog-js";
 
+import { dropNoiseExceptions } from "~/lib/exception-noise";
+
 const posthogKey = process.env.NEXT_PUBLIC_POSTHOG_KEY;
 let posthogPromise: Promise<PostHog> | null = null;
 
@@ -73,14 +75,15 @@ function getPostHog() {
         capture_unhandled_rejections: true,
         capture_console_errors: false,
       },
+      before_send: dropNoiseExceptions,
       // Extensions are bundled above; config, flags and events still use the proxy.
       disable_external_dependency_loading: true,
       disable_session_recording: false,
       enable_recording_console_log: false,
       session_recording: {
-        // Priority audiences: 100%, no minimum. Others: 20%, 10s minimum.
-        // Both recording groups are managed in PostHog settings.
-        // The separate $0 billing cap stops ingestion at the free allowance.
+        // All sessions: 100%, no minimum, managed in PostHog settings.
+        // Startup credits cover replay; no replay billing cap is set.
+        // Input masking and secret-field exclusions remain independent.
         maskAllInputs: true,
         blockSelector:
           ".ph-no-capture, input[type='hidden'], input[type='file']",

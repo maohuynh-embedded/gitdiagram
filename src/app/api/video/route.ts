@@ -4,6 +4,7 @@ import {
   githubRepoSchema,
   githubUsernameSchema,
 } from "~/server/generate/types";
+import { getClientIp } from "~/server/http/client-ip";
 import {
   jsonErrorResponse,
   NO_STORE_RESPONSE_HEADERS,
@@ -12,13 +13,36 @@ import {
   canGenerateVideos,
   isVideoExplainerEnabled,
 } from "~/server/explainer/config";
-import { readControls } from "~/server/admin/controls";
-import { emitLiveEvent, requestOrigin } from "~/server/admin/live-events";
-import { anyDeviceHere, audienceBlock } from "~/server/explainer/audience";
-import { isVideoAdmin, videosLeftToday } from "~/server/explainer/limits";
-import { hasNarrationCredits } from "~/server/explainer/narration";
-import { readVideoArtifact } from "~/server/explainer/store";
+import { readAdmissionControls } from "~/server/admin/controls";
+import { viewAsCountry } from "~/server/admin/view-as";
+import { videoResponseTag } from "~/server/explainer/cache";
+import {
+  anyDeviceHere,
+  audienceBlock,
+  isInVideoRegion,
+  limitedCountryRule,
+} from "~/server/explainer/audience";
+import { reportHeldBack } from "~/server/explainer/gate-notice";
+import {
+  generationLockName,
+  isVideoAdmin,
+  isVideoLockHeld,
+  videoLimitReached,
+} from "~/server/explainer/limits";
+import { reapOrphanedRuns } from "~/server/explainer/run-journal";
+import { isNarrationAvailable } from "~/server/explainer/narration";
+import { canSellVideos, videoPriceCents } from "~/server/explainer/payments";
+import {
+  publicVideoArtifact,
+  readVideoArtifact,
+} from "~/server/explainer/store";
+import {
+  readVisitor,
+  withVisitorCookie,
+  type Visitor,
+} from "~/server/explainer/visitor";
 import type { VideoPausedReason } from "~/features/explainer/api";
+import { recordAgentFetch } from "~/server/visibility/agent-fetch";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -32,11 +56,14 @@ const querySchema = z.object({
 /**
  * Whether this visitor could start a new video right now, and if not, why:
  * "audience" (early access is limited to a few places), "device" (open to
- * desktops only here) or "limit" (today's budget is spent).
+ * desktops only here) or "limit" (paused, or a budget this visitor would
+ * meet is spent: everyone's, their own or their connection's).
  */
 async function videoAvailability(
   request: Request,
-  repository: string,
+  visitor: Visitor,
+  username: string,
+  repo: string,
 ): Promise<{
   canGenerate: boolean;
   paused: VideoPausedReason | null;
@@ -51,49 +78,64 @@ async function videoAvailability(
       : { canGenerate: true, paused: null };
   }
   // The operator, signed in to /admin, may always make videos.
-  if (isVideoAdmin(request))
+  if (await isVideoAdmin(request))
     return { canGenerate: true, paused: null, anyDevice: true };
   // Someone wanted a video and was held back: demand the operator sees, with
   // the reason, on the /admin feed.
   const heldBack = (reason: string) =>
-    void emitLiveEvent({
-      kind: "video.gated",
-      repo: repository,
-      reason,
-      step: "page",
-      ...requestOrigin(request),
-    });
-  const controls = await readControls();
-  // Tablets pass as desktops here, so the page holds them back itself unless
-  // this visitor may use any device.
-  const anyDevice = anyDeviceHere(request, controls.videoAudience);
-  if (controls.videosPaused) {
-    heldBack("paused");
-    return { canGenerate: false, paused: "limit" };
-  }
-  const blocked = audienceBlock(request, controls.videoAudience);
-  if (blocked) {
-    heldBack(blocked);
-    return {
-      canGenerate: false,
-      paused: blocked === "mobile" ? "device" : "audience",
-    };
-  }
+    reportHeldBack(request, { username, repo, reason, step: "page" });
   try {
-    const [left, credits] = await Promise.all([
-      videosLeftToday(),
-      hasNarrationCredits(),
+    const controls = await readAdmissionControls();
+    // Tablets pass as desktops here, so the page holds them back itself unless
+    // this visitor may use any device.
+    const anyDevice = anyDeviceHere(
+      request,
+      controls.videoAudience,
+      controls.priorityPlaces,
+    );
+    if (controls.videosPaused) {
+      heldBack("paused");
+      return { canGenerate: false, paused: "limit" };
+    }
+    const blocked = audienceBlock(
+      request,
+      controls.videoAudience,
+      controls.priorityPlaces,
+    );
+    if (blocked) {
+      heldBack(blocked);
+      return {
+        canGenerate: false,
+        paused: blocked === "mobile" ? "device" : "audience",
+      };
+    }
+    const country = limitedCountryRule(request, controls, getClientIp(request));
+    if (country === "blocked") {
+      heldBack("country");
+      return { canGenerate: false, paused: "audience" };
+    }
+    const [reached, credits] = await Promise.all([
+      videoLimitReached(
+        { visitorId: visitor.id, clientIp: getClientIp(request) },
+        {
+          priority: isInVideoRegion(request, controls.priorityPlaces),
+          limited: country === "limited",
+        },
+      ),
+      isNarrationAvailable(),
     ]);
-    if (left > 0 && credits)
+    if (!reached && credits)
       return { canGenerate: true, paused: null, anyDevice };
-    heldBack(left > 0 ? "credits" : "daily");
+    heldBack(reached?.reason ?? "voice");
     return { canGenerate: false, paused: "limit" };
   } catch {
+    // Without Redis nothing new can start (see the generate route).
     return { canGenerate: false, paused: "limit" };
   }
 }
 
 export async function GET(request: Request): Promise<Response> {
+  void recordAgentFetch(request.headers.get("user-agent"), "video-state");
   if (!isVideoExplainerEnabled())
     return jsonErrorResponse("Explainer videos are not enabled.", 404);
   const url = new URL(request.url);
@@ -102,27 +144,63 @@ export async function GET(request: Request): Promise<Response> {
     repo: url.searchParams.get("repo"),
   });
   if (!parsed.success) return jsonErrorResponse("Invalid repository.", 400);
-  const video = await readVideoArtifact(parsed.data.username, parsed.data.repo);
+  const { username, repo } = parsed.data;
+  const video = await readVideoArtifact(username, repo);
   if (video)
     return Response.json(
-      { ok: true, video, canGenerate: false, paused: null },
+      {
+        ok: true,
+        video: publicVideoArtifact(video),
+        canGenerate: false,
+        paused: null,
+      },
       {
         headers: {
-          // A stored video changes only when the operator regenerates it.
+          // A stored video changes only when the operator regenerates it;
+          // the tag keeps the edge's copy short-lived (see videoResponseTag).
           "Cache-Control":
             "public, max-age=0, s-maxage=60, stale-while-revalidate=600",
+          "Vercel-Cache-Tag": videoResponseTag(username, repo),
         },
       },
     );
-  return Response.json(
-    {
-      ok: true,
-      video: null,
-      ...(await videoAvailability(
-        request,
-        `${parsed.data.username}/${parsed.data.repo}`,
-      )),
-    },
-    { headers: NO_STORE_RESPONSE_HEADERS },
+  const visitor = readVisitor(request);
+  // A run in progress, which the page can wait for instead of offering a
+  // new one. Only production takes the lock.
+  const production = process.env.NODE_ENV === "production";
+  const [generating] = await Promise.all([
+    production && isVideoLockHeld(generationLockName(username, repo)),
+    // A run that died without a word (its server was killed) gives back its
+    // place in the budget before this visitor is told what they may do.
+    production ? reapOrphanedRuns() : 0,
+  ]);
+  const availability = await videoAvailability(
+    request,
+    visitor,
+    username,
+    repo,
+  );
+  // Anyone the free rules hold back may buy the video instead. It is
+  // answered even when they may make it free, because an iPad let in only as
+  // a desktop is held back by the page itself (see explainer-video.tsx).
+  const payable = !generating && (await canSellVideos());
+  // Never cached, so a waiting page sees the video once it lands. This is
+  // also where a browser gets the visitor id that starting a video needs; the
+  // cached answer above never carries one.
+  return withVisitorCookie(
+    Response.json(
+      {
+        ok: true,
+        video: null,
+        generating,
+        ...availability,
+        payable,
+        priceCents: payable ? videoPriceCents() : null,
+        // The operator previewing the page as a visitor from this country.
+        viewingAs: viewAsCountry(request),
+      },
+      { headers: NO_STORE_RESPONSE_HEADERS },
+    ),
+    visitor,
   );
 }

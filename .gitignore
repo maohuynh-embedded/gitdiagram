@@ -2,6 +2,7 @@
 
 # dependencies
 /node_modules
+/workers/*/node_modules
 /.pnp
 .pnp.js
 
@@ -33,8 +34,11 @@ next-env.d.ts
 # vercel
 .vercel
 
-# cloudflare wrangler local state
+# cloudflare: wrangler local state, local secrets, the OpenNext build
 .wrangler/
+.dev.vars*
+/.open-next/
+/.open-next-history/
 
 # local tool state
 /.agents/
@@ -69,5 +73,10 @@ venv
 # vscode
 .vscode/
 
+# the MCP App diagram view, built by scripts/build-mcp-app.mjs
+/public/mcp-app/
+
 # local explainer video artifacts (development)
 .video-cache/
+/wrangler.staging*.jsonc
+/wrangler.deploy.jsonc

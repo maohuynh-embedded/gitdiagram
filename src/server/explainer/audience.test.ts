@@ -6,9 +6,9 @@ import {
   anyDeviceHere,
   audienceBlock,
   audienceMessage,
-  canMakeVideosHere,
   isDesktopRequest,
   isInVideoRegion,
+  limitedCountryRule,
 } from "./audience";
 
 const MAC =
@@ -55,6 +55,18 @@ describe("who may make new videos", () => {
     expect(at("DE", "BE")).toBe(false);
   });
 
+  it("lets anyone in the US, Canada or the UK in when the operator widens it", () => {
+    const texas = request({
+      "x-vercel-ip-country": "US",
+      "x-vercel-ip-country-region": "TX",
+      "user-agent": IPHONE,
+    });
+    expect(isInVideoRegion(texas)).toBe(false);
+    expect(isInVideoRegion(texas, "countries")).toBe(true);
+    expect(audienceBlock(texas, "priority", "countries")).toBeNull();
+    expect(anyDeviceHere(texas, "priority", "countries")).toBe(true);
+  });
+
   it("takes anywhere around London, by distance or by city", () => {
     const uk = (lat: string, lon: string, city = "") =>
       isInVideoRegion(
@@ -70,6 +82,30 @@ describe("who may make new videos", () => {
     expect(uk("51.7520", "-1.2577")).toBe(false); // Oxford
     expect(uk("53.4808", "-2.2426")).toBe(false); // Manchester
     expect(uk("", "", "London")).toBe(true);
+    expect(uk("", "", "Greater%20London")).toBe(true);
+    // A malformed city (possible off Vercel) is read as it is, not a crash.
+    expect(uk("", "", "London%E0%A4%A")).toBe(true);
+    expect(uk("", "", "%zz")).toBe(false);
+  });
+
+  it("takes Paris and the area around it", () => {
+    const fr = (region: string, lat: string, lon: string, city = "") =>
+      isInVideoRegion(
+        request({
+          "x-vercel-ip-country": "FR",
+          "x-vercel-ip-country-region": region,
+          "x-vercel-ip-latitude": lat,
+          "x-vercel-ip-longitude": lon,
+          "x-vercel-ip-city": city,
+        }),
+      );
+    expect(fr("IDF", "", "")).toBe(true); // Île-de-France
+    expect(fr("", "48.8049", "2.1204")).toBe(true); // Versailles
+    expect(fr("", "48.4047", "2.7016")).toBe(true); // Fontainebleau
+    expect(fr("CVL", "48.4439", "1.4890")).toBe(false); // Chartres
+    expect(fr("", "", "", "Paris")).toBe(true);
+    expect(fr("ARA", "45.7640", "4.8357")).toBe(false); // Lyon
+    expect(fr("NOR", "49.4432", "1.0999")).toBe(false); // Rouen
   });
 
   it("lets any device in from an early-access place", () => {
@@ -78,14 +114,14 @@ describe("who may make new videos", () => {
       "x-vercel-ip-country-region": "ON",
     };
     expect(
-      canMakeVideosHere(request({ ...inOntario, "user-agent": MAC })),
-    ).toBe(true);
+      audienceBlock(request({ ...inOntario, "user-agent": MAC })),
+    ).toBeNull();
     expect(
-      canMakeVideosHere(request({ ...inOntario, "user-agent": IPHONE })),
-    ).toBe(true);
+      audienceBlock(request({ ...inOntario, "user-agent": IPHONE })),
+    ).toBeNull();
     expect(
-      canMakeVideosHere(request({ ...inOntario, "user-agent": ANDROID })),
-    ).toBe(true);
+      audienceBlock(request({ ...inOntario, "user-agent": ANDROID })),
+    ).toBeNull();
     expect(anyDeviceHere(request({ ...inOntario, "user-agent": MAC }))).toBe(
       true,
     );
@@ -116,11 +152,65 @@ describe("who may make new videos", () => {
       "x-vercel-ip-country-region": "TX",
       "user-agent": IPHONE,
     });
-    expect(canMakeVideosHere(texasMac, "priority")).toBe(false);
-    expect(canMakeVideosHere(texasMac, "desktop")).toBe(true);
+    expect(audienceBlock(texasMac, "priority")).toBe("place");
+    expect(audienceBlock(texasMac, "desktop")).toBeNull();
     expect(anyDeviceHere(texasMac, "desktop")).toBe(false);
-    expect(canMakeVideosHere(texasPhone, "desktop")).toBe(false);
-    expect(canMakeVideosHere(texasPhone, "everyone")).toBe(true);
+    expect(audienceBlock(texasPhone, "desktop")).toBe("mobile");
+    expect(audienceBlock(texasPhone, "everyone")).toBeNull();
     expect(anyDeviceHere(texasPhone, "everyone")).toBe(true);
+  });
+});
+
+describe("the limited countries", () => {
+  const DAY = 86_400_000;
+  const from = (country: string) => request({ "x-vercel-ip-country": country });
+  const rule = (
+    country: string,
+    limitedCountryAccess: "blocked" | "some" | "open",
+    limitedCountryShare: number | null = null,
+    ip = "203.0.113.7",
+    now = 20_000 * DAY,
+  ) =>
+    limitedCountryRule(
+      from(country),
+      { limitedCountryAccess, limitedCountryShare },
+      ip,
+      now,
+    );
+
+  it("leaves every other country alone", () => {
+    expect(rule("US", "blocked")).toBeNull();
+    expect(rule("DE", "some", 0)).toBeNull();
+    expect(rule("", "blocked")).toBeNull();
+    for (const country of ["EG", "ZA", "LY", "MA", "DZ"])
+      expect(rule(country, "blocked")).toBeNull();
+  });
+
+  it("blocks, draws or opens as the operator picks", () => {
+    for (const country of ["IN", "VN", "BR", "PH", "PK", "ID", "NG", "KE"])
+      expect(rule(country, "blocked")).toBe("blocked");
+    expect(rule("IN", "open")).toBeNull();
+    expect(rule("IN", "some", 0)).toBe("blocked");
+    expect(rule("IN", "some", 100)).toBe("limited");
+  });
+
+  it("lets in about the set share of connections, the same all day", () => {
+    const drawn = Array.from({ length: 2000 }, (_, index) =>
+      rule("IN", "some", null, `198.51.${index >> 8}.${index & 255}`),
+    ).filter((result) => result === "limited").length;
+    expect(drawn).toBeGreaterThan(140);
+    expect(drawn).toBeLessThan(260);
+    const ip = "198.51.100.23";
+    const morning = rule("IN", "some", 50, ip, 20_000 * DAY + 1_000);
+    expect(rule("IN", "some", 50, ip, 20_000 * DAY + DAY - 1_000)).toBe(
+      morning,
+    );
+  });
+
+  it("draws per connection, so a new browser does not draw again", () => {
+    // Same /64: one connection.
+    expect(rule("IN", "some", 50, "2001:db8:1:2::1")).toBe(
+      rule("IN", "some", 50, "2001:db8:1:2::ffff"),
+    );
   });
 });

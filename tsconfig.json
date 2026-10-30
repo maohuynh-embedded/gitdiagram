@@ -12,7 +12,6 @@
     "strict": true,
     "noUncheckedIndexedAccess": true,
     "checkJs": true,
-    "ignoreDeprecations": "6.0",
     /* Bundled projects */
     "lib": ["dom", "dom.iterable", "ES2022"],
     "noEmit": true,
@@ -27,7 +26,6 @@
     "incremental": true,
     "types": ["node"],
     /* Path Aliases */
-    "baseUrl": ".",
     "paths": {
       "~/*": ["./src/*"]
     }
@@ -46,8 +44,13 @@
     ".agents",
     ".claude",
     ".playwright-mcp",
+    "experiments",
     "public/video-engine",
+    "public/mcp-app",
     "workers",
+    "cloudflare",
+    ".open-next",
+    ".open-next-history",
     "**/__pycache__"
   ]
 }

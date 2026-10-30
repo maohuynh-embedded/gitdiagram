@@ -1,196 +1,32 @@
-import type {
-  ShotAction,
-  ShotBeat,
-  ShotElement,
-  ShotPlan,
+import {
+  SHOT_ACTIONS,
+  SHOT_ICONS,
+  SHOT_KINDS,
+  SHOT_TONES,
+  SHOT_TRANSITIONS,
+  SVG_PAINT,
+  SVG_SHAPES,
+  type ShotAction,
+  type ShotBeat,
+  type ShotElement,
+  type ShotKind,
+  type ShotPlan,
 } from "~/features/explainer/types";
+import { parseLayout, solveLayout } from "./layout";
+import type { Script } from "./script";
 import {
   clip,
   normalizeWord,
-  spokenLine,
-  writtenLine,
+  plainText as text,
+  records as list,
+  withoutStrangeAddresses,
   type PlanRepositoryFacts,
 } from "./text";
 
-type JsonSchema = Record<string, unknown>;
-const str: JsonSchema = { type: "string" };
-const num: JsonSchema = { type: "number" };
-const bool: JsonSchema = { type: "boolean" };
-const arr = (items: JsonSchema): JsonSchema => ({ type: "array", items });
-
-const SHOT_KINDS = [
-  "heading",
-  "text",
-  "code",
-  "terminal",
-  "box",
-  "chip",
-  "file",
-  "tree",
-  "table",
-  "bars",
-  "number",
-  "stamp",
-  "browser",
-  "request",
-  "list",
-  "svg",
-  "arrow",
-] as const;
-const ACTIONS = [
-  "highlight",
-  "dim",
-  "restore",
-  "exit",
-  "strike",
-  "pulse",
-  "shake",
-  "check",
-  "cross",
-  "replace",
-  "count",
-  "move",
-  "type",
-  "flow",
-  "scan",
-  "focus",
-  "reset",
-] as const;
-const TONES = ["plain", "accent", "soft", "ok", "bad", "ghost"];
-const ICONS = [
-  "server",
-  "database",
-  "user",
-  "file",
-  "folder",
-  "globe",
-  "lock",
-  "bolt",
-  "clock",
-  "queue",
-  "cpu",
-  "cloud",
-  "key",
-  "gear",
-  "package",
-  "browser",
-  "terminal",
-  "shield",
-  "cache",
-  "none",
-];
-const TRANSITIONS = ["slide", "push", "zoom", "cut"];
-
-// Both roles get both tools so the cached prefix (tools → system → repo) is shared.
-export const SCRIPT_TOOL = {
-  name: "write_script",
-  description: "DIRECTOR only: submit the film's script.",
-  input_schema: {
-    type: "object",
-    properties: {
-      title: str,
-      story: {
-        type: "string",
-        description:
-          "The whole narration as one flowing paragraph, written before the beats; the beats split it word for word.",
-      },
-      outro: str,
-      beats: arr({
-        type: "object",
-        properties: { scene: str, narration: str, brief: str },
-        required: ["scene", "narration", "brief"],
-      }),
-    },
-    required: ["title", "story", "outro", "beats"],
-  },
-};
-
-export const SHOTS_TOOL = {
-  name: "write_shots",
-  description:
-    "DESIGNER only: submit the exact shots for the beats you were assigned.",
-  input_schema: {
-    type: "object",
-    properties: {
-      shots: arr({
-        type: "object",
-        properties: {
-          beat: { type: "integer" },
-          transition: { type: "string", enum: TRANSITIONS },
-          elements: arr({
-            type: "object",
-            properties: {
-              id: str,
-              kind: { type: "string", enum: SHOT_KINDS },
-              x: num,
-              y: num,
-              w: num,
-              h: num,
-              at: str,
-              text: str,
-              size: str,
-              tone: str,
-              mono: bool,
-              title: str,
-              lines: arr(str),
-              focus: arr({ type: "integer" }),
-              label: str,
-              sub: str,
-              icon: str,
-              path: str,
-              paths: arr(str),
-              columns: arr(str),
-              rows: arr(arr(str)),
-              items: { type: "array" },
-              unit: str,
-              value: num,
-              prefix: str,
-              suffix: str,
-              url: str,
-              method: str,
-              status: { type: ["integer", "null"] },
-              viewBox: str,
-              shapes: arr({ type: "object" }),
-              from: str,
-              to: str,
-              dashed: bool,
-              flow: bool,
-            },
-            required: ["id", "kind"],
-          }),
-          actions: arr({
-            type: "object",
-            properties: {
-              at: str,
-              do: { type: "string", enum: ACTIONS },
-              target: {},
-              lines: arr({ type: "integer" }),
-              rows: arr({ type: "integer" }),
-              text: str,
-              value: num,
-              x: num,
-              y: num,
-              line: str,
-            },
-            required: ["do"],
-          }),
-        },
-        required: ["beat", "elements", "actions"],
-      }),
-    },
-    required: ["shots"],
-  },
-};
+// The designers' shots, merged into the script and checked against the
+// repository before anything reaches the stage.
 
 type Json = Record<string, unknown>;
-const rec = (value: unknown): Json =>
-  value && typeof value === "object" && !Array.isArray(value)
-    ? (value as Json)
-    : {};
-const list = (value: unknown): Json[] =>
-  Array.isArray(value) ? value.map(rec) : [];
-const text = (value: unknown): string =>
-  typeof value === "string" || typeof value === "number" ? String(value) : "";
 const strings = (value: unknown, max: number, limit: number): string[] =>
   (Array.isArray(value) ? value : [])
     .slice(0, max)
@@ -204,62 +40,30 @@ const clamp = (n: number, lo: number, hi: number) =>
 const words = (sentence: string) =>
   sentence.split(/\s+/).map(normalizeWord).filter(Boolean);
 
-interface ScriptBeat {
-  scene: string;
-  /** What the captions show and cues match: no delivery tags. */
-  narration: string;
-  /** What the voice reads: the narration with its delivery tags. */
-  spoken: string;
-  brief: string;
-}
-export interface Script {
-  title: string;
-  outro: string;
-  beats: ScriptBeat[];
-}
+// More than a beat can show; a designer asking for more loses the rest.
+const MAX_ELEMENTS_PER_BEAT = 12;
+const MAX_ACTIONS_PER_BEAT = 16;
+// Warnings are stored in the public artifact; past this only a count is kept.
+const MAX_WARNINGS = 50;
 
-export function normalizeScript(raw: unknown, name: string): Script {
-  const input = rec(raw);
-  const beats = list(input.beats)
-    .slice(0, 22)
-    .map((beat) => ({
-      scene: clip(beat.scene, 24) || "s",
-      narration: writtenLine(text(beat.narration)),
-      spoken: spokenLine(text(beat.narration)),
-      brief: clip(beat.brief, 900),
-    }))
-    .filter((beat) => beat.narration);
-  if (beats.length < 4) throw new Error("The script has too few beats.");
-  return {
-    title: clip(input.title || name, 28),
-    outro: clip(input.outro, 60),
-    beats,
-  };
+/** A warning list that stops growing at MAX_WARNINGS. */
+class Warnings {
+  readonly list: string[] = [];
+  private dropped = 0;
+  get full() {
+    return this.list.length >= MAX_WARNINGS;
+  }
+  push(warning: string) {
+    if (this.full) this.dropped++;
+    else this.list.push(warning);
+  }
+  done(): string[] {
+    return this.dropped
+      ? [...this.list, `…and ${this.dropped} more warnings`]
+      : this.list;
+  }
 }
-
-// At a natural speaking pace (about 2.1 words a second, with pauses) this
-// keeps the film near a minute. Longer scripts go back to the director once.
-export const SCRIPT_WORD_TARGET = 125;
-export const SCRIPT_WORD_LIMIT = 140;
-
-export function scriptWordCount(script: Script): number {
-  return script.beats.reduce(
-    (sum, beat) => sum + beat.narration.split(/\s+/).filter(Boolean).length,
-    0,
-  );
-}
-
-/** The script as designers see it: numbered beats with scene and brief. */
-export function scriptForDesigners(script: Script): string {
-  return script.beats
-    .map(
-      (beat, index) =>
-        `${index}. [${beat.scene}] "${beat.narration}" — ${beat.brief}`,
-    )
-    .join("\n");
-}
-
-const MIN_SIZE: Record<string, [number, number]> = {
+const MIN_SIZE: Record<Exclude<ShotKind, "arrow">, [number, number]> = {
   heading: [2, 0.8],
   text: [1.5, 0.4],
   code: [5, 2.2],
@@ -276,7 +80,35 @@ const MIN_SIZE: Record<string, [number, number]> = {
   request: [5, 1.1],
   list: [3, 1.2],
   svg: [1.5, 1.5],
+  image: [3, 2],
 };
+
+// The canvas an element may occupy: the top band (y < 0.95) belongs to the
+// repository label.
+const CANVAS = { left: 0.6, right: 15.4, top: 0.95, bottom: 8.6 };
+
+/**
+ * The one id rule for element ids, arrow ends and action targets: lowercase
+ * snake_case, at most 32 characters. Names every object inherits (such as
+ * "constructor") get a trailing underscore, so no id can reach a prototype.
+ */
+export function normalizeShotId(value: unknown): string {
+  const id = text(value)
+    .toLowerCase()
+    .replace(/[^a-z0-9_]/g, "_")
+    .slice(0, 32);
+  return id in Object.prototype ? `${id}_` : id;
+}
+
+/** The one cue rule: the first word, normalized, if this beat speaks it. */
+function cueWord(value: unknown, narration: string): string | null {
+  const word = words(text(value))[0];
+  if (!word) return "";
+  return words(narration).includes(word) ? word : null;
+}
+
+// Elements whose designer wrote coordinates (films designed before layouts).
+const placedByDesigner = new WeakSet<ShotElement>();
 
 // A designer numbers tree rows before unknown paths are dropped; this maps each
 // original row (1-based) to the row it became, so highlights land on the right one.
@@ -293,24 +125,16 @@ function normalizeElement(
   raw: Json,
   narration: string,
   facts: PlanRepositoryFacts,
-  warnings: string[],
+  warnings: Warnings,
   where: string,
 ): ShotElement | null {
-  const kind = text(raw.kind) as ShotElement["kind"];
+  const kind = text(raw.kind) as ShotKind;
   if (!SHOT_KINDS.includes(kind)) return null;
-  const id =
-    text(raw.id)
-      .toLowerCase()
-      .replace(/[^a-z0-9_]/g, "_")
-      .slice(0, 32) || kind;
-  const cue = (value: unknown) => {
-    const word = words(text(value))[0];
-    if (!word) return "";
-    if (words(narration).includes(word)) return word;
-    warnings.push(`cue "${text(value)}" not in narration (${where})`);
-    return "";
-  };
-  const base = { id, kind, at: cue(raw.at) };
+  const id = normalizeShotId(raw.id) || kind;
+  const at = cueWord(raw.at, narration);
+  if (at === null)
+    warnings.push(`cue "${text(raw.at)}" not in narration (${where})`);
+  const base = { id, kind, at: at ?? "" };
   if (kind === "arrow")
     return {
       ...base,
@@ -318,20 +142,24 @@ function normalizeElement(
       y: 0,
       w: 0,
       h: 0,
-      from: text(raw.from),
-      to: text(raw.to),
+      from: normalizeShotId(raw.from),
+      to: normalizeShotId(raw.to),
       label: clip(raw.label, 18),
       dashed: Boolean(raw.dashed),
       flow: Boolean(raw.flow),
     };
-  const [minW, minH] = MIN_SIZE[kind] ?? [1, 0.5];
-  const w = clamp(number(raw.w, minW), minW, 14.8);
-  const h = clamp(number(raw.h, minH), minH, 7.8);
-  const x = clamp(number(raw.x, 0.8), 0.6, 15.4 - w);
-  // The top band (y < 0.95) belongs to the repository label.
-  const y = clamp(number(raw.y, 1), 0.95, 8.6 - h);
+  const [minW, minH] = MIN_SIZE[kind];
+  const w = clamp(number(raw.w, minW), minW, CANVAS.right - CANVAS.left);
+  const h = clamp(number(raw.h, minH), minH, CANVAS.bottom - CANVAS.top);
+  const x = clamp(number(raw.x, 0.8), CANVAS.left, CANVAS.right - w);
+  const y = clamp(number(raw.y, 1), CANVAS.top, CANVAS.bottom - h);
   const element: ShotElement = { ...base, x, y, w, h };
-  const tone = TONES.includes(text(raw.tone)) ? text(raw.tone) : "plain";
+  if (
+    Number.isFinite(Number(raw.x ?? NaN)) &&
+    Number.isFinite(Number(raw.y ?? NaN))
+  )
+    placedByDesigner.add(element);
+  const tone = SHOT_TONES.includes(text(raw.tone)) ? text(raw.tone) : "plain";
   switch (kind) {
     case "heading":
       element.text = clip(raw.text, 60);
@@ -352,6 +180,18 @@ function normalizeElement(
         .map((line) => {
           const clean = text(line).replace(/\t/g, "  ").replace(/\s+$/, "");
           return clean.length > 72 ? clean.slice(0, 71) + "…" : clean;
+        });
+      // Indentation every line shares only narrows the panel's type.
+      const indent = Math.min(
+        ...lines
+          .filter((line) => line.trim() && line.trim() !== "…")
+          .map((line) => /^ */.exec(line)![0].length),
+      );
+      if (Number.isFinite(indent) && indent > 0)
+        lines.forEach((line, i) => {
+          lines[i] = line.startsWith(" ".repeat(indent))
+            ? line.slice(indent)
+            : line.trimStart();
         });
       element.title = clip(raw.title, 60);
       element.lines = lines;
@@ -376,29 +216,43 @@ function normalizeElement(
     case "box":
       element.label = clip(raw.label, 28);
       element.sub = clip(raw.sub, 36);
-      element.icon = ICONS.includes(text(raw.icon)) ? text(raw.icon) : "none";
+      element.icon = SHOT_ICONS.includes(text(raw.icon))
+        ? text(raw.icon)
+        : "none";
       element.tone = tone;
       break;
     case "chip":
       element.text = clip(raw.text, 28);
       element.tone = tone;
       break;
-    case "file":
-      element.path = clip(raw.path, 60);
-      if (!pathExists(facts, text(raw.path)))
-        warnings.push(`file ${text(raw.path)} not in repo (${where})`);
+    case "file": {
+      const path = resolvePath(facts, text(raw.path));
+      if (!path) {
+        // A file card claims the file exists; one the tree lacks is dropped.
+        warnings.push(`dropped file ${text(raw.path)} not in repo (${where})`);
+        return null;
+      }
+      element.path = displayPath(path);
       break;
+    }
     case "tree": {
       const paths: string[] = [];
       const rowMap = new Map<number, number>();
-      strings(raw.paths, 10, 60).forEach((path, index) => {
-        if (!pathExists(facts, path)) {
-          warnings.push(`dropped unknown path ${path} (${where})`);
-          return;
-        }
-        paths.push(path);
-        rowMap.set(index + 1, paths.length);
-      });
+      (Array.isArray(raw.paths) ? raw.paths : [])
+        .slice(0, 10)
+        .forEach((value, index) => {
+          const path = resolvePath(facts, text(value));
+          if (!path) {
+            warnings.push(`dropped unknown path ${text(value)} (${where})`);
+            return;
+          }
+          paths.push(displayPath(path));
+          rowMap.set(index + 1, paths.length);
+        });
+      if (!paths.length) {
+        warnings.push(`dropped tree ${id} with no known paths (${where})`);
+        return null;
+      }
       element.paths = paths;
       element.focus = remapRows(numbers(raw.focus, 10), rowMap);
       treeRowMaps.set(element, rowMap);
@@ -444,6 +298,15 @@ function normalizeElement(
     case "list":
       element.items = strings(raw.items, 5, 48);
       break;
+    case "image":
+      // Only a picture stored with the film; anything else is dropped.
+      if (!facts.images?.includes(text(raw.src))) {
+        warnings.push(`dropped unknown picture ${text(raw.src)} (${where})`);
+        return null;
+      }
+      element.src = text(raw.src);
+      element.fit = text(raw.fit) === "cover" ? "cover" : "contain";
+      break;
     case "svg":
       element.viewBox = /^[\d.\s-]+$/.test(text(raw.viewBox))
         ? text(raw.viewBox)
@@ -451,7 +314,53 @@ function normalizeElement(
       element.shapes = sanitizeShapes(raw.shapes);
       break;
   }
+  withoutStrangeAddressesOnScreen(
+    element,
+    facts.material ?? facts.sourceText,
+    warnings,
+    where,
+  );
   return element;
+}
+
+// Every on-screen field that can carry free text.
+const SCREEN_TEXT = ["text", "label", "sub", "title", "url"] as const;
+const SCREEN_LINES = ["lines", "items", "columns"] as const;
+
+/**
+ * The narration's web-address rule (withoutStrangeAddresses), applied to what
+ * the element shows: a text naming an address the repository never mentions
+ * loses that sentence, and a list keeps its length (the line is emptied) so
+ * line and row numbers still point at the same entries.
+ */
+function withoutStrangeAddressesOnScreen(
+  element: ShotElement,
+  known: string,
+  warnings: Warnings,
+  where: string,
+) {
+  let removed = false;
+  const clean = (value: unknown) => {
+    if (typeof value !== "string") return value;
+    const kept = withoutStrangeAddresses(value, known);
+    if (kept !== value) removed = true;
+    return kept;
+  };
+  for (const key of SCREEN_TEXT)
+    if (key in element) element[key] = clean(element[key]);
+  for (const key of SCREEN_LINES)
+    if (Array.isArray(element[key]))
+      element[key] = (element[key] as unknown[]).map((item) =>
+        item && typeof item === "object"
+          ? { ...item, label: clean((item as Json).label) }
+          : clean(item),
+      );
+  if (Array.isArray(element.rows))
+    element.rows = (element.rows as unknown[][]).map((row) => row.map(clean));
+  if (removed)
+    warnings.push(
+      `removed an unknown web address from ${element.id} (${where})`,
+    );
 }
 
 function numbers(value: unknown, max: number): number[] {
@@ -461,8 +370,7 @@ function numbers(value: unknown, max: number): number[] {
     .slice(0, 8);
 }
 
-function pathExists(facts: PlanRepositoryFacts, path: string) {
-  const clean = path.replace(/^\.?\//, "").replace(/\/$/, "");
+function pathExists(facts: PlanRepositoryFacts, clean: string) {
   return (
     clean === "" ||
     facts.paths.some(
@@ -471,8 +379,45 @@ function pathExists(facts: PlanRepositoryFacts, path: string) {
   );
 }
 
-const SHAPES = ["path", "rect", "circle", "line", "polyline", "polygon"];
-const PAINT = ["none", "paper", "card", "accent", "soft", "ink", "ok", "bad"];
+/**
+ * The real path a designer meant, checked before anything is clipped. Designers
+ * often shorten a deep path to its tail ("adapters/filters/Foo.java"): a tail
+ * that ends exactly one real file or folder resolves to its full path, and one
+ * that ends several stays as written (it still names real files).
+ */
+function resolvePath(facts: PlanRepositoryFacts, raw: string): string | null {
+  const clean = raw
+    .trim()
+    .replace(/^\.?\//, "")
+    .replace(/\/$/, "");
+  if (!clean || clean.includes("..")) return null;
+  if (pathExists(facts, clean)) return clean;
+  const matches = new Set<string>();
+  for (const known of facts.paths) {
+    const at = `/${known}/`.indexOf(`/${clean}/`);
+    if (at >= 0) matches.add(known.slice(0, at + clean.length));
+    if (matches.size > 1) return clean;
+  }
+  return [...matches][0] ?? null;
+}
+
+const PATH_DISPLAY_LIMIT = 60;
+
+/** Long paths lose their leading folders, never the file name. */
+function displayPath(path: string): string {
+  if (path.length <= PATH_DISPLAY_LIMIT) return path;
+  const parts = path.split("/");
+  let tail = parts.pop()!;
+  while (
+    parts.length &&
+    parts.at(-1)!.length + tail.length + 3 <= PATH_DISPLAY_LIMIT
+  )
+    tail = `${parts.pop()}/${tail}`;
+  return tail.length + 2 <= PATH_DISPLAY_LIMIT
+    ? `…/${tail}`
+    : `…${tail.slice(-(PATH_DISPLAY_LIMIT - 1))}`;
+}
+
 const GEOMETRY = [
   "x",
   "y",
@@ -491,7 +436,7 @@ const GEOMETRY = [
 function sanitizeShapes(value: unknown) {
   return list(value)
     .slice(0, 24)
-    .filter((shape) => SHAPES.includes(text(shape.shape)))
+    .filter((shape) => SVG_SHAPES.includes(text(shape.shape)))
     .map((shape) => {
       const clean: Json = { shape: text(shape.shape) };
       for (const key of GEOMETRY)
@@ -501,7 +446,9 @@ function sanitizeShapes(value: unknown) {
         clean.d = text(shape.d).slice(0, 600);
       if (/^[\d.,\s-]+$/.test(text(shape.points)))
         clean.points = text(shape.points).slice(0, 400);
-      clean.fill = PAINT.includes(text(shape.fill)) ? text(shape.fill) : "none";
+      clean.fill = SVG_PAINT.includes(text(shape.fill))
+        ? text(shape.fill)
+        : "none";
       clean.stroke = ["ink", "accent", "none"].includes(text(shape.stroke))
         ? text(shape.stroke)
         : "ink";
@@ -512,24 +459,20 @@ function sanitizeShapes(value: unknown) {
 function normalizeAction(
   raw: Json,
   narration: string,
-  warnings: string[],
+  warnings: Warnings,
   where: string,
 ): ShotAction | null {
   const kind = text(raw.do) as ShotAction["do"];
-  if (!ACTIONS.includes(kind)) return null;
-  const word = words(text(raw.at))[0] ?? "";
-  if (word && !words(narration).includes(word))
+  if (!SHOT_ACTIONS.includes(kind)) return null;
+  const at = cueWord(raw.at, narration);
+  if (at === null)
     warnings.push(`action cue "${text(raw.at)}" not in narration (${where})`);
   const targets = (Array.isArray(raw.target) ? raw.target : [raw.target])
-    .map((target) =>
-      text(target)
-        .toLowerCase()
-        .replace(/[^a-z0-9_]/g, "_"),
-    )
+    .map(normalizeShotId)
     .filter(Boolean);
   const action: ShotAction = {
     do: kind,
-    at: word && words(narration).includes(word) ? word : "",
+    at: at ?? "",
     target: targets,
   };
   if (Array.isArray(raw.lines)) action.lines = numbers(raw.lines, 99);
@@ -550,11 +493,25 @@ export function normalizeShots(
   designed: Map<number, Json>,
   facts: PlanRepositoryFacts,
 ): { plan: ShotPlan; warnings: string[] } {
-  const warnings: string[] = [];
+  const warnings = new Warnings();
   const beats: ShotBeat[] = [];
   let sceneIds = new Set<string>();
   let present = new Map<string, ShotElement>();
   let rowMaps = new Map<string, Map<number, number>>();
+  // A designer who reuses an id in a scene means the newest element by it, so
+  // later arrows and actions naming it land there (it is stored as `id_2`).
+  let aliases = new Map<string, string>();
+  // Scenes as runs of beats, and whether each is laid out here (the designer
+  // sent a layout, or no coordinates at all) or keeps the designer's own.
+  const sceneOf: number[] = [];
+  const sceneLayouts: unknown[] = [];
+  script.beats.forEach((beat, index) => {
+    const first = index === 0 || script.beats[index - 1]!.scene !== beat.scene;
+    if (first) sceneLayouts.push(undefined);
+    sceneOf.push(sceneLayouts.length - 1);
+    sceneLayouts[sceneLayouts.length - 1] ??= designed.get(index)?.layout;
+  });
+  const solved = sceneLayouts.map(() => true);
   script.beats.forEach((beat, index) => {
     const where = `beat ${index}`;
     const first = index === 0 || script.beats[index - 1]!.scene !== beat.scene;
@@ -562,11 +519,22 @@ export function normalizeShots(
       sceneIds = new Set();
       present = new Map();
       rowMaps = new Map();
+      aliases = new Map();
     }
     const shot = designed.get(index);
     if (!shot) warnings.push(`no shot designed for ${where}`);
     const elements: ShotElement[] = [];
-    for (const raw of list(shot?.elements)) {
+    const rawElements = list(shot?.elements);
+    const rawActions = list(shot?.actions);
+    if (rawElements.length > MAX_ELEMENTS_PER_BEAT)
+      warnings.push(
+        `dropped ${rawElements.length - MAX_ELEMENTS_PER_BEAT} elements past the limit (${where})`,
+      );
+    if (rawActions.length > MAX_ACTIONS_PER_BEAT)
+      warnings.push(
+        `dropped ${rawActions.length - MAX_ACTIONS_PER_BEAT} actions past the limit (${where})`,
+      );
+    for (const raw of rawElements.slice(0, MAX_ELEMENTS_PER_BEAT)) {
       const element = normalizeElement(
         raw,
         beat.narration,
@@ -575,23 +543,41 @@ export function normalizeShots(
         where,
       );
       if (!element) continue;
+      if (
+        placedByDesigner.has(element) &&
+        sceneLayouts[sceneOf[index]!] == null
+      )
+        solved[sceneOf[index]!] = false;
+      // Hand-drawn shapes belong to films whose designer placed everything.
+      if (element.kind === "svg" && sceneLayouts[sceneOf[index]!] != null) {
+        warnings.push(
+          `dropped svg ${element.id} from a laid-out scene (${where})`,
+        );
+        continue;
+      }
       let id = element.id;
       for (let n = 2; sceneIds.has(id); n++) id = `${element.id}_${n}`;
+      aliases.set(element.id, id);
       element.id = id;
       sceneIds.add(id);
       const rowMap = treeRowMaps.get(element);
       if (rowMap) rowMaps.set(id, rowMap);
       elements.push(element);
     }
-    // Arrows need both ends on screen by now.
+    const resolve = (ref: unknown) => aliases.get(String(ref)) ?? String(ref);
+    // Arrows join two elements (never another arrow) on screen by now; they
+    // may be listed before the elements they join.
+    const isEnd = (id: string) => {
+      const end = present.get(id) ?? elements.find((e) => e.id === id);
+      return Boolean(end) && end!.kind !== "arrow";
+    };
     const kept = elements.filter((element) => {
       if (element.kind !== "arrow") return true;
+      element.from = resolve(element.from);
+      element.to = resolve(element.to);
       const ok =
-        [element.from, element.to].every(
-          (end) =>
-            present.has(String(end)) ||
-            elements.some((e) => e.id === end && e.kind !== "arrow"),
-        ) && element.from !== element.to;
+        [element.from, element.to].every((end) => isEnd(String(end))) &&
+        element.from !== element.to;
       if (!ok)
         warnings.push(
           `dropped arrow ${element.id} with a missing end (${where})`,
@@ -600,11 +586,14 @@ export function normalizeShots(
     });
     for (const element of kept) present.set(element.id, element);
     const actions: ShotAction[] = [];
-    for (const raw of list(shot?.actions)) {
+    for (const raw of rawActions.slice(0, MAX_ACTIONS_PER_BEAT)) {
       const action = normalizeAction(raw, beat.narration, warnings, where);
       if (!action) continue;
-      const targets = (action.target as string[]).filter((target) =>
-        present.has(target),
+      const targets = (action.target as string[]).map(resolve).filter(
+        (target) =>
+          present.has(target) &&
+          // Arrows are routed between their ends; they cannot be moved.
+          !(action.do === "move" && present.get(target)!.kind === "arrow"),
       );
       if (action.do !== "reset" && !targets.length) {
         warnings.push(`dropped ${action.do} on a missing target (${where})`);
@@ -614,42 +603,128 @@ export function normalizeShots(
       const rowMap = rowMaps.get(targets[0] ?? "");
       if (rowMap && Array.isArray(action.rows))
         action.rows = remapRows(action.rows as number[], rowMap);
+      // A layout decides where things sit; the designer knows no coordinates.
+      if (action.do === "move" && solved[sceneOf[index]!]) continue;
+      if (action.do === "move") {
+        const moved = present.get(targets[0]!)!;
+        // The whole element stays on the canvas where it lands.
+        action.x = clamp(Number(action.x), CANVAS.left, CANVAS.right - moved.w);
+        action.y = clamp(Number(action.y), CANVAS.top, CANVAS.bottom - moved.h);
+        present.set(moved.id, {
+          ...moved,
+          x: Number(action.x),
+          y: Number(action.y),
+        });
+      }
       actions.push(action);
       if (action.do === "exit")
         for (const target of targets) present.delete(target);
-      if (action.do === "move") {
-        const moved = present.get(targets[0]!);
-        if (moved)
-          present.set(moved.id, {
-            ...moved,
-            x: Number(action.x),
-            y: Number(action.y),
-          });
-      }
     }
-    warnOverlaps([...present.values()], warnings, where);
+    if (!solved[sceneOf[index]!])
+      warnOverlaps([...present.values()], warnings, where);
     beats.push({
       scene: beat.scene,
       narration: beat.narration,
       transition:
-        first && TRANSITIONS.includes(text(shot?.transition))
+        first && SHOT_TRANSITIONS.includes(text(shot?.transition))
           ? text(shot?.transition)
           : "",
       elements: kept,
       actions,
     });
   });
+  sceneLayouts.forEach((layout, scene) => {
+    if (solved[scene])
+      layOut(
+        beats.filter((_, index) => sceneOf[index] === scene),
+        layout,
+        facts,
+      );
+  });
   return {
     plan: { title: script.title, outro: script.outro, beats },
-    warnings,
+    warnings: warnings.done(),
   };
+}
+
+/**
+ * Places one scene's elements from its layout (layout.ts). Elements sharing
+ * a slot take turns: each leaves on the cue that brings the next one in.
+ */
+function layOut(
+  beats: ShotBeat[],
+  layout: unknown,
+  facts: PlanRepositoryFacts,
+) {
+  const parsed = parseLayout(layout);
+  const solve = (all: ShotElement[]) =>
+    solveLayout({
+      layout: parsed,
+      elements: all.filter((element) => element.kind !== "arrow"),
+      arrows: all.filter((element) => element.kind === "arrow"),
+      actions: beats.flatMap((beat) => beat.actions),
+      pictures: facts.pictureSizes,
+    });
+  const { slots } = solve(beats.flatMap((beat) => beat.elements));
+  const entry = (id: string) => {
+    const beat = beats.findIndex((b) => b.elements.some((e) => e.id === id));
+    const order =
+      beat < 0 ? -1 : beats[beat]!.elements.findIndex((e) => e.id === id);
+    return { beat, order };
+  };
+  for (const slot of slots) {
+    const groups = slot
+      .map((ids) => ({ ids, at: entry(ids[0]!) }))
+      .filter((group) => group.at.beat >= 0)
+      .sort((a, b) => a.at.beat - b.at.beat || a.at.order - b.at.order);
+    for (let i = 1; i < groups.length; i++) {
+      const next = groups[i]!;
+      const beat = beats[next.at.beat]!;
+      const exited = new Set(
+        beats
+          .slice(0, next.at.beat + 1)
+          .flatMap((b) => b.actions)
+          .filter((action) => action.do === "exit")
+          .flatMap((action) => action.target),
+      );
+      const leaving = groups[i - 1]!.ids.filter((id) => !exited.has(id));
+      if (leaving.length)
+        beat.actions.unshift({
+          do: "exit",
+          at: beat.elements[next.at.order]!.at,
+          target: leaving,
+        });
+    }
+  }
+  // A beat that clears the screen starts afresh: what comes after it is laid
+  // out on its own, with the whole frame to itself.
+  const phases: ShotElement[][] = [];
+  const live = new Set<string>();
+  for (const beat of beats) {
+    const gone = new Set(
+      beat.actions.filter((a) => a.do === "exit").flatMap((a) => a.target),
+    );
+    const cleared = live.size > 0 && [...live].every((id) => gone.has(id));
+    if (!phases.length || (cleared && beat.elements.length)) phases.push([]);
+    for (const id of gone) live.delete(id);
+    for (const element of beat.elements) {
+      phases.at(-1)!.push(element);
+      if (element.kind !== "arrow") live.add(element.id);
+    }
+    for (const action of beat.actions)
+      if (action.do === "restore") for (const id of action.target) live.add(id);
+  }
+  if (phases.length > 1) for (const phase of phases) solve(phase);
 }
 
 function warnOverlaps(
   elements: ShotElement[],
-  warnings: string[],
+  warnings: Warnings,
   where: string,
 ) {
+  // Pairs grow with the square of what is on screen; once the warnings are
+  // full, nothing more would be kept.
+  if (warnings.full) return;
   const boxes = elements.filter(
     (element) => element.kind !== "arrow" && element.kind !== "browser",
   );

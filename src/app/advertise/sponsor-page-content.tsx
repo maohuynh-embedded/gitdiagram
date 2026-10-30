@@ -1,9 +1,10 @@
 import { ArrowDown } from "lucide-react";
 import Image from "next/image";
+import type { CSSProperties } from "react";
 import { SponsorEmailActions } from "./sponsor-email-actions";
 import { SponsorPlacementPreview } from "./sponsor-placement-preview";
 import {
-  SPONSOR_AVAILABILITY,
+  advertisers,
   SPONSOR_EMAIL,
   SPONSOR_EMAIL_ADDRESS,
   SPONSOR_PRICE,
@@ -47,10 +48,17 @@ export function SponsorPageContent({ content }: { content: SponsorContent }) {
           <span>to your product.</span>
         </h1>
         <p className={styles.introduction}>
-          GitDiagram had{" "}
-          <strong>{content.monthlyVisitors} unique visitors</strong> in the last
-          30 days. Reach developers as they explore GitHub repositories, with
-          placements that link directly to your website.
+          {content.audience && (
+            <>
+              GitDiagram had{" "}
+              <strong>
+                {content.audience.monthlyVisitors} unique visitors
+              </strong>{" "}
+              in the last 30 days.{" "}
+            </>
+          )}
+          Reach developers as they explore GitHub repositories, with placements
+          that link directly to your website.
         </p>
         <p className={styles.offerSummary}>
           <span>
@@ -60,7 +68,7 @@ export function SponsorPageContent({ content }: { content: SponsorContent }) {
             Shared or exclusive placements
           </span>
         </p>
-        <p className={styles.availability}>{SPONSOR_AVAILABILITY}</p>
+        <p className={styles.availability}>{content.availability}</p>
         <div className={styles.heroActions}>
           <SponsorEmailActions
             email={SPONSOR_EMAIL_ADDRESS}
@@ -71,6 +79,47 @@ export function SponsorPageContent({ content }: { content: SponsorContent }) {
             <ArrowDown aria-hidden="true" />
           </a>
         </div>
+        <div className={styles.advertisers}>
+          <p id="advertisers-label">GitDiagram has run campaigns for:</p>
+          <ul aria-labelledby="advertisers-label">
+            {advertisers.map(({ name, href, src, darkSrc, width, height }) => {
+              const size = {
+                width,
+                height,
+                style: { "--w": `${width}px` } as CSSProperties,
+              };
+              return (
+                <li key={name}>
+                  <a
+                    href={href}
+                    target="_blank"
+                    rel="sponsored noopener"
+                    aria-label={name}
+                  >
+                    <Image
+                      src={src}
+                      alt=""
+                      {...size}
+                      className={
+                        darkSrc ? styles.advertiserLogoLight : undefined
+                      }
+                      unoptimized
+                    />
+                    {darkSrc && (
+                      <Image
+                        src={darkSrc}
+                        alt=""
+                        {...size}
+                        className={styles.advertiserLogoDark}
+                        unoptimized
+                      />
+                    )}
+                  </a>
+                </li>
+              );
+            })}
+          </ul>
+        </div>
       </section>
 
       <section
@@ -79,19 +128,39 @@ export function SponsorPageContent({ content }: { content: SponsorContent }) {
         aria-labelledby="audience-title"
       >
         <h2 id="audience-title">Audience</h2>
-        <div className={styles.audienceColumns}>
-          <AudienceMetrics title="Last 30 days" metrics={content.monthly} />
-          <AudienceMetrics title="Lifetime" metrics={content.lifetime} />
-        </div>
+        {content.audience ? (
+          <div className={styles.audienceColumns}>
+            <AudienceMetrics
+              title="Last 30 days"
+              metrics={content.audience.monthly}
+            />
+            <AudienceMetrics
+              title="Lifetime"
+              metrics={content.audience.lifetime}
+            />
+          </div>
+        ) : (
+          <p className={styles.statsError} role="status">
+            The audience figures could not be loaded from PostHog right now.
+            They retry every few minutes; email Ahmed for current numbers.
+          </p>
+        )}
         <div className={styles.dataNote}>
           <p>
-            Source: PostHog and GitHub.{" "}
-            <time dateTime={content.asOf}>Updated {content.updatedAt}.</time>
+            Source: PostHog and GitHub.
+            {content.audience && (
+              <>
+                {" "}
+                <time dateTime={content.audience.asOf}>
+                  Updated {content.audience.updatedAt}.
+                </time>
+              </>
+            )}
           </p>
           <p>
-            Figures refresh about every five minutes. The 30-day window ends at
-            the time shown. Visitors are unique within each window. Pageviews
-            measure site traffic, not ad impressions.
+            Figures refresh about every hour, lifetime totals daily. The 30-day
+            window ends at the time shown. Visitors are unique within each
+            window. Pageviews measure site traffic, not ad impressions.
           </p>
         </div>
       </section>
@@ -108,9 +177,11 @@ export function SponsorPageContent({ content }: { content: SponsorContent }) {
               <article key={surface.name}>
                 <div className={styles.placementHeading}>
                   <h3>{surface.name}</h3>
-                  <p>
-                    <span>{surface.metric.value}</span> {surface.metric.label}
-                  </p>
+                  {surface.metric && (
+                    <p>
+                      <span>{surface.metric.value}</span> {surface.metric.label}
+                    </p>
+                  )}
                 </div>
                 <p>{surface.description}</p>
                 <SponsorPlacementPreview
@@ -152,31 +223,39 @@ export function SponsorPageContent({ content }: { content: SponsorContent }) {
         id="sponsor-offer"
         aria-labelledby="offer-title"
       >
-        <p className={styles.bookingNote}>
-          <span>October 20 campaign booked by</span>
-          <Image
-            src="/sponsors/coderabbit-wordmark.svg"
-            alt="CodeRabbit"
-            width={2152}
-            height={314}
-            className={styles.bookingLogoLight}
-            unoptimized
-          />
-          <Image
-            src="/sponsors/coderabbit-wordmark-white.svg"
-            alt="CodeRabbit"
-            width={2152}
-            height={313}
-            className={styles.bookingLogoDark}
-            unoptimized
-          />
-        </p>
+        {content.bookedBy && (
+          <p className={styles.bookingNote}>
+            <span>{content.bookedBy.label}</span>
+            <Image
+              src={content.bookedBy.logo.src}
+              alt={content.bookedBy.name}
+              width={content.bookedBy.logo.width}
+              height={content.bookedBy.logo.height}
+              className={
+                content.bookedBy.logo.darkSrc
+                  ? styles.bookingLogoLight
+                  : undefined
+              }
+              unoptimized
+            />
+            {content.bookedBy.logo.darkSrc && (
+              <Image
+                src={content.bookedBy.logo.darkSrc}
+                alt={content.bookedBy.name}
+                width={content.bookedBy.logo.width}
+                height={content.bookedBy.logo.height}
+                className={styles.bookingLogoDark}
+                unoptimized
+              />
+            )}
+          </p>
+        )}
         <div className={styles.offerHeading}>
           <div>
             <h2 id="offer-title">Advertise for 30 days</h2>
             <p className={styles.offerDescription}>
-              New campaigns start from late November 2026, after CodeRabbit’s
-              run. Choose a shared website spot or an exclusive campaign.
+              {content.offerTiming} Choose a shared website spot or an exclusive
+              campaign.
             </p>
           </div>
         </div>

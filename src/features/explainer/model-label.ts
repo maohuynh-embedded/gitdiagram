@@ -1,0 +1,26 @@
+// How a planner model is named to people: "Claude Opus 5.5", "GPT-6.1 Sol".
+const LABELS: Array<[RegExp, string]> = [
+  [/^claude-fable-5-1/, "Claude Fable 5.1"],
+  [/^claude-opus-5-5/, "Claude Opus 5.5"],
+  [/^claude-opus-5/, "Claude Opus 5"],
+  [/^claude-sonnet-5/, "Claude Sonnet 5"],
+  [/^claude-haiku-5-5/, "Claude Haiku 5.5"],
+  [/^gpt-6-astra/, "GPT-6 Astra"],
+  [/^gpt-6\.1-sol/, "GPT-6.1 Sol"],
+  [/^gpt-6-sol/, "GPT-6 Sol"],
+  [/^gpt-6-luna/, "GPT-6 Luna"],
+];
+
+function label(model: string): string {
+  return LABELS.find(([pattern]) => pattern.test(model))?.[1] ?? model;
+}
+
+/** A film written by one model and designed by another is "director+designer". */
+export function modelLabels(model: string): string[] {
+  // Older videos may not record one.
+  return (model || "").split("+").filter(Boolean).map(label);
+}
+
+export function modelLabel(model: string): string {
+  return modelLabels(model).join(" and ");
+}

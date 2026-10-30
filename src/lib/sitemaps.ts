@@ -1,9 +1,17 @@
 export const SITEMAP_PAGE_SIZE = 45_000;
-const STATIC_SITEMAP_ROUTE_COUNT = 3;
 
-export function getSitemapCount(repoRouteCount: number) {
-  const totalRouteCount = repoRouteCount + STATIC_SITEMAP_ROUTE_COUNT;
-  return Math.max(1, Math.ceil(totalRouteCount / SITEMAP_PAGE_SIZE));
+/**
+ * How many sitemap pages hold `routeCount` listed pages (repositories and
+ * video watch pages) plus the `fixedRouteCount` fixed ones at the top of the
+ * first page (/, /browse, /advertise, and /videos while videos are on). The
+ * sitemap's generateSitemaps is the one caller; robots.txt lists what it
+ * returns.
+ */
+export function getSitemapCount(routeCount: number, fixedRouteCount: number) {
+  return Math.max(
+    1,
+    Math.ceil((routeCount + fixedRouteCount) / SITEMAP_PAGE_SIZE),
+  );
 }
 
 export function getSitemapUrls(siteUrl: string, sitemapCount: number) {

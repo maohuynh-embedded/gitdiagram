@@ -1,7 +1,7 @@
 import { z } from "zod";
 
 import { setClaudeCredit } from "~/server/admin/claude-credit";
-import { isAdminRequest } from "~/server/admin/operator";
+import { verifyAdminRequest } from "~/server/admin/operator";
 import {
   jsonErrorResponse,
   NO_STORE_RESPONSE_HEADERS,
@@ -17,7 +17,8 @@ const requestSchema = z.strictObject({
 
 /** Record the Claude credit balance the Console shows right now. */
 export async function POST(request: Request): Promise<Response> {
-  if (!isAdminRequest(request)) return jsonErrorResponse("Sign in first.", 401);
+  if (!(await verifyAdminRequest(request)))
+    return jsonErrorResponse("Sign in first.", 401);
   const parsed = await parseSameOriginJsonRequest(request, {
     schema: requestSchema,
     maxBytes: 256,
@@ -25,8 +26,13 @@ export async function POST(request: Request): Promise<Response> {
   });
   if (!parsed.success) return parsed.response;
   try {
-    await setClaudeCredit(parsed.data.usd);
-    return Response.json({ ok: true }, { headers: NO_STORE_RESPONSE_HEADERS });
+    // The new credit goes back with the answer, so the dashboard shows it
+    // without waiting for its next read.
+    const credit = await setClaudeCredit(parsed.data.usd);
+    return Response.json(
+      { ok: true, credit },
+      { headers: NO_STORE_RESPONSE_HEADERS },
+    );
   } catch (error) {
     console.error(
       JSON.stringify({

@@ -1,5 +1,6 @@
 // @vitest-environment node
 import { beforeEach, describe, expect, it, vi } from "vitest";
+import type * as StreamFinalization from "~/server/generate/stream-finalization";
 
 const mocks = vi.hoisted(() => ({
   after: vi.fn(),
@@ -8,6 +9,7 @@ const mocks = vi.hoisted(() => ({
   clearFailureSummary: vi.fn(),
   estimateCost: vi.fn(),
   finalizeQuota: vi.fn(),
+  finalizeStream: vi.fn(),
   generateStructuredOutput: vi.fn(),
   getGithubData: vi.fn(),
   getModel: vi.fn(),
@@ -43,6 +45,9 @@ vi.mock("next/cache", () => ({
 vi.mock("~/server/browse-index-cache", () => ({
   revalidateBrowseIndexCache: vi.fn(),
 }));
+vi.mock("~/server/visibility/indexnow", () => ({
+  notifyIndexNow: vi.fn(async () => undefined),
+}));
 vi.mock("~/server/storage/artifact-store", () => ({
   writePublicDiagramPreview: mocks.writePublicPreview,
 }));
@@ -65,6 +70,11 @@ vi.mock("~/server/generate/complimentary-gate", () => ({
   modelMatchesComplimentaryFamily: vi.fn(() => true),
   shouldApplyComplimentaryGate: mocks.shouldApplyComplimentaryGate,
 }));
+vi.mock("~/server/generate/stream-finalization", async (importOriginal) => {
+  const actual = await importOriginal<typeof StreamFinalization>();
+  mocks.finalizeStream.mockImplementation(actual.finalizeGenerationStream);
+  return { ...actual, finalizeGenerationStream: mocks.finalizeStream };
+});
 vi.mock("~/server/generate/cost-estimate", () => ({
   estimateGenerationCost: mocks.estimateCost,
 }));
@@ -76,7 +86,7 @@ vi.mock("~/server/generate/cancellation", () => ({
 vi.mock("~/server/generate/github", () => ({
   getGithubData: mocks.getGithubData,
   REPOSITORY_TOO_LARGE_ERROR:
-    "Repository is too large (>195k tokens) for analysis. Try a smaller repo.",
+    "Repository is too large for analysis. Try a smaller repo.",
 }));
 vi.mock("~/server/generate/model-config", async (importOriginal) => ({
   ...(await importOriginal<object>()),
@@ -101,6 +111,7 @@ vi.mock("~/server/generate/rate-limit", async (importOriginal) => ({
   refundGenerationRateLimit: mocks.refundRateLimit,
 }));
 import { POST } from "~/app/api/generate/stream/route";
+import { emitLiveEvent } from "~/server/admin/live-events";
 
 const estimateCostSummary = {
   kind: "estimate" as const,
@@ -249,6 +260,12 @@ describe("POST /api/generate/stream", () => {
 
     expect(body).toContain("REPOSITORY_NOT_FOUND");
     expect(body).toContain("GitHub access");
+    // Unverified, so the client must not report the repository's name.
+    const terminal = readSseEvents(body).find(
+      (event) => event.status === "error",
+    );
+    expect(terminal).toMatchObject({ used_own_key: false });
+    expect(terminal).not.toHaveProperty("repository_visibility");
     // The caller reached a model call for nothing, so the slot goes back.
     expect(mocks.refundRateLimit).toHaveBeenCalledWith({
       clientIp: "203.0.113.7",
@@ -269,6 +286,62 @@ describe("POST /api/generate/stream", () => {
     expect(mocks.refundRateLimit).not.toHaveBeenCalled();
   });
 
+  it("names a repository on the live feed only once it is confirmed public", async () => {
+    mockEstimate(1_000);
+    const live = () =>
+      vi
+        .mocked(emitLiveEvent)
+        .mock.calls.map(([event]) => [
+          event.kind,
+          event.repo,
+          event.job?.state ?? null,
+        ]);
+
+    mocks.getGithubData.mockRejectedValueOnce(
+      new Error("Repository not found."),
+    );
+    await (await POST(request())).text();
+    await mocks.afterCallback?.();
+    expect(live()).toEqual([["diagram.finished", "a repository", null]]);
+
+    vi.mocked(emitLiveEvent).mockClear();
+    mocks.streamCompletion.mockRejectedValue(new Error("upstream exploded"));
+    await (await POST(request())).text();
+    await mocks.afterCallback?.();
+    expect(live()).toEqual([
+      ["diagram.started", "openai/openai-node", "start"],
+      ["diagram.finished", "openai/openai-node", "end"],
+    ]);
+
+    vi.mocked(emitLiveEvent).mockClear();
+    mocks.resolveRequestCredentials.mockResolvedValue({ githubPat: "ghp_x" });
+    await (await POST(request())).text();
+    await mocks.afterCallback?.();
+    expect(live()).toEqual([
+      ["diagram.started", "a private repository", "start"],
+      ["diagram.finished", "a private repository", "end"],
+    ]);
+  });
+
+  it("ends the live job and closes the stream even when finalizing throws", async () => {
+    mockEstimate(1_000);
+    mocks.streamCompletion.mockRejectedValue(new Error("upstream exploded"));
+    mocks.finalizeStream.mockRejectedValueOnce(new Error("storage exploded"));
+
+    // The response ends (no hang until the platform timeout).
+    await (await POST(request())).text();
+    await mocks.afterCallback?.();
+
+    expect(
+      vi
+        .mocked(emitLiveEvent)
+        .mock.calls.map(([event]) => [event.kind, event.job?.state ?? null]),
+    ).toEqual([
+      ["diagram.started", "start"],
+      ["diagram.finished", "end"],
+    ]);
+  });
+
   it("does not throttle a caller who brings their own API key", async () => {
     mockEstimate(1_000);
     mocks.resolveRequestCredentials.mockResolvedValue({ apiKey: "sk-user" });
@@ -285,7 +358,7 @@ describe("POST /api/generate/stream", () => {
   });
 
   it("rejects an oversized repository before reserving complimentary quota", async () => {
-    mockEstimate(200_000);
+    mockEstimate(950_000);
 
     const response = await POST(request());
     const body = await response.text();
@@ -298,7 +371,7 @@ describe("POST /api/generate/stream", () => {
   });
 
   it("rejects a repository at exactly the hard token limit", async () => {
-    mockEstimate(195_000);
+    mockEstimate(900_000);
 
     const response = await POST(request());
     const body = await response.text();
@@ -333,7 +406,7 @@ describe("POST /api/generate/stream", () => {
   });
 
   it("uses same-origin stored credentials resolved at the request boundary", async () => {
-    mockEstimate(200_000);
+    mockEstimate(950_000);
     mocks.resolveRequestCredentials.mockResolvedValueOnce({
       apiKey: "stored-openai-key",
       githubPat: "stored-github-pat",
@@ -653,6 +726,8 @@ describe("POST /api/generate/stream", () => {
       status: "complete",
       explanation: "Hello-world request flow.",
       graph,
+      used_own_key: false,
+      repository_visibility: "public",
     });
     expect(terminal?.diagram).toEqual(expect.stringContaining("flowchart TD"));
     expect(terminal).not.toHaveProperty("graph_attempts");
